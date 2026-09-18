@@ -217,7 +217,7 @@ type ProxyNetwork struct {
 
 // ImagePolicy controls which images may be spawned.
 type ImagePolicy struct {
-	RequireDigest bool   `json:"requireDigest,omitempty"`
+	RequireDigest *bool  `json:"requireDigest,omitempty"`
 	Cosign        Cosign `json:"cosign,omitempty"`
 }
 

@@ -22,6 +22,7 @@ import (
 	jugv1 "github.com/cchulo/project-juggernaut/api/v1alpha1"
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/controller"
+	"github.com/cchulo/project-juggernaut/internal/netpol"
 	"github.com/cchulo/project-juggernaut/internal/session"
 	"github.com/cchulo/project-juggernaut/internal/version"
 )
@@ -83,6 +84,23 @@ func run(ctx context.Context, log *slog.Logger, cfgPath, wrapperImage, metricsAd
 		opts.EgressProxy = cfg.Network.Proxy.Address
 	}
 	rec := &controller.SessionReconciler{Client: mgr.GetClient(), Namespace: ns, Options: opts}
+	if cfg.Network.EgressEnforcer != config.EgressNone || !cfg.Network.AllowInsecure {
+		iso := &controller.Isolation{
+			Client:          mgr.GetClient(),
+			Options:         netpol.DefaultOptions(cfg.Network),
+			Log:             log,
+			SystemNamespace: "juggernaut-system",
+			CiliumAvailable: ciliumInstalled(mgr),
+		}
+		rec.Isolation = iso
+		if err := mgr.Add(runnable(func(ctx context.Context) error {
+			return iso.EnsureNamespaceDefaultDeny(ctx, ns)
+		})); err != nil {
+			return err
+		}
+	} else {
+		log.Warn("network isolation disabled (egressEnforcer none + allowInsecure); session pods are NOT isolated")
+	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return err
 	}
@@ -120,6 +138,13 @@ func redisTable(cfg *config.Config, log *slog.Logger) (session.Table, error) {
 	}
 	c := redis.NewClient(&redis.Options{Addr: cfg.Gateway.Redis.Address, Password: pw, DB: cfg.Gateway.Redis.DB})
 	return session.NewRedis(c, cfg.Gateway.Redis.KeyPrefix, cfg.Gateway.MaxSessionAge.Or(12*time.Hour), nil), nil
+}
+
+// ciliumInstalled reports whether the CiliumNetworkPolicy CRD is served.
+func ciliumInstalled(mgr ctrl.Manager) bool {
+	gvk := netpol.CiliumNetworkPolicyGVK
+	_, err := mgr.GetRESTMapper().RESTMapping(gvk.GroupKind(), gvk.Version)
+	return err == nil
 }
 
 type runnable func(context.Context) error

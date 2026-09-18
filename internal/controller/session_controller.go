@@ -20,8 +20,13 @@ type SessionReconciler struct {
 	client.Client
 	Namespace string
 	Options   PodOptions
-	// Decorate lets later milestones add objects (network policies) per session.
-	Decorate func(ctx context.Context, sess *jugv1.Session, st *jugv1.ServerType) error
+	// Isolation renders network policies and allowlists; nil disables isolation (laptop only).
+	Isolation *Isolation
+}
+
+// SetControllerReference adapts the reconciler's scheme for the Isolation helper.
+func (r *SessionReconciler) SetControllerReference(owner, object metav1.Object) error {
+	return controllerutil.SetControllerReference(owner, object, r.Scheme())
 }
 
 // SetupWithManager registers the reconciler.
@@ -49,6 +54,11 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.cleanup(ctx, &sess); err != nil {
 			return ctrl.Result{}, err
 		}
+		if r.Isolation != nil {
+			if err := r.Isolation.OnCleanup(ctx, &sess); err != nil {
+				return ctrl.Result{}, err
+			}
+		}
 		if sess.DeletionTimestamp.IsZero() {
 			// Reaper-initiated: delete the object itself; the finalizer path runs next.
 			return ctrl.Result{}, client.IgnoreNotFound(r.Delete(ctx, &sess))
@@ -69,9 +79,9 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureWrapperConfigMap(ctx, &st); err != nil {
 		return ctrl.Result{}, err
 	}
-	if r.Decorate != nil {
-		if err := r.Decorate(ctx, &sess, &st); err != nil {
-			return ctrl.Result{}, err
+	if r.Isolation != nil {
+		if err := r.Isolation.Decorate(ctx, &sess, &st, &sess, r); err != nil {
+			return r.fail(ctx, &sess, "isolation: "+err.Error())
 		}
 	}
 
@@ -125,6 +135,11 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			sess.Status.Endpoint = fmt.Sprintf("http://%s:%d", pod.Status.PodIP, st.Spec.WrapperPort)
 			sess.Status.ReadyAt = &now
 			sess.Status.Message = ""
+			if r.Isolation != nil {
+				if err := r.Isolation.OnReady(ctx, &sess, &st, pod.Status.PodIP); err != nil {
+					return ctrl.Result{}, err
+				}
+			}
 			log.Info("session ready", "pod", pod.Name, "endpoint", sess.Status.Endpoint)
 			return ctrl.Result{}, r.Status().Update(ctx, &sess)
 		}

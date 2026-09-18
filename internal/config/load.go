@@ -207,8 +207,9 @@ func ApplyDefaults(c *Config) {
 	if n.DenyCIDRs == nil {
 		n.DenyCIDRs = []string{"169.254.169.254/32", "169.254.0.0/16", "fd00::/8"}
 	}
-	if !n.ImagePolicy.RequireDigest && !n.AllowInsecure {
-		n.ImagePolicy.RequireDigest = true
+	if n.ImagePolicy.RequireDigest == nil {
+		t := true
+		n.ImagePolicy.RequireDigest = &t
 	}
 
 	for i := range c.Servers {
@@ -332,6 +333,9 @@ func Validate(c *Config) error {
 	if c.Network.EgressEnforcer == EgressProxy && (c.Network.Proxy == nil || c.Network.Proxy.Address == "") {
 		add("network.proxy.address is required when network.egressEnforcer is proxy")
 	}
+	if c.Network.PodAuth == "mtls" {
+		add("network.podAuth: mtls is reserved for a later milestone; use shared-secret")
+	}
 	if c.Identity.Broker.Mode == BrokerExchange && !c.Identity.Broker.ClientSecretRef.IsSet() {
 		add("identity.broker.clientSecretRef is required for broker mode exchange")
 	}
@@ -342,7 +346,7 @@ func Validate(c *Config) error {
 			add("servers: duplicate name %q", s.Name)
 		}
 		seen[s.Name] = true
-		if c.Network.ImagePolicy.RequireDigest && !digestRe.MatchString(s.Image) {
+		if *c.Network.ImagePolicy.RequireDigest && !digestRe.MatchString(s.Image) {
 			add("servers[%s].image must be pinned by digest (@sha256:...) or set network.imagePolicy.requireDigest: false", s.Name)
 		}
 		if s.Transport == TransportStdio && len(s.Command) == 0 {

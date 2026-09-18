@@ -49,6 +49,9 @@ func (r *Redactor) Scrub(line string) string {
 
 // Pipe copies lines from the child's stderr into the logger, scrubbed.
 func (r *Redactor) Pipe(src io.Reader, log *slog.Logger) {
+	if log == nil {
+		log = slog.Default()
+	}
 	sc := bufio.NewScanner(src)
 	sc.Buffer(make([]byte, 64*1024), 1<<20)
 	for sc.Scan() {

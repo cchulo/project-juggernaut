@@ -16,9 +16,8 @@ gateway:
     address: redis.juggernaut-system.svc:6379
 network:
   sessionsNamespace: juggernaut-sessions
-  # kind without Cilium: hostname allowlists are enforced by juggernaut-egress.
-  egressEnforcer: proxy
-  proxy: { address: juggernaut-egress.juggernaut-system.svc:3128 }
+  # Cilium enforces toFQDNs and filters DNS lookups through its DNS proxy.
+  egressEnforcer: cilium
   imagePolicy: { requireDigest: false }
 servers:
   - name: everything

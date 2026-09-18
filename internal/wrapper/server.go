@@ -30,6 +30,8 @@ type Server struct {
 	redactor *Redactor
 	podToken []byte
 
+	httpMode *httpMode
+
 	mu    sync.RWMutex
 	tools []*mcp.Tool
 	ready bool
@@ -47,7 +49,15 @@ func NewServer(cfg *Config, log *slog.Logger) (*Server, error) {
 	}
 	r := NewRedactor(cfg.LogRedaction)
 	r.Add(string(tok))
-	return &Server{cfg: cfg, log: log, redactor: r, child: NewChild(cfg, log, r), podToken: tok}, nil
+	s := &Server{cfg: cfg, log: log, redactor: r, child: NewChild(cfg, log, r), podToken: tok}
+	if cfg.Transport != "stdio" {
+		hm, err := newHTTPMode(cfg, log, r)
+		if err != nil {
+			return nil, err
+		}
+		s.httpMode = hm
+	}
+	return s, nil
 }
 
 // Run serves until ctx is done.
@@ -77,6 +87,9 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = data.Shutdown(shutdown)
 	_ = probes.Shutdown(shutdown)
 	s.child.Close()
+	if s.httpMode != nil {
+		s.httpMode.stop()
+	}
 	return nil
 }
 
@@ -89,7 +102,7 @@ func (s *Server) probeMux() http.Handler {
 		ready := s.ready
 		s.mu.RUnlock()
 		state := map[string]any{"ready": ready, "child": "not-started"}
-		if s.child.Running() {
+		if s.child.Running() || (s.httpMode != nil && s.httpMode.running()) {
 			state["child"] = "running"
 		}
 		w.Header().Set("Content-Type", "application/json")
@@ -124,9 +137,14 @@ func (s *Server) requirePodToken(next http.Handler) http.Handler {
 // tools/resources/prompts to the child; for HTTP servers the wrapper reverse
 // proxies to the local port (milestone 0 only supports stdio; HTTP is TODO).
 func (s *Server) mcpHandler() http.Handler {
-	if s.cfg.Transport != "stdio" {
-		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "wrapper: HTTP transports are proxied directly by the gateway in this milestone", http.StatusNotImplemented)
+	if s.httpMode != nil {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if err := s.httpMode.ensureStarted(r.Context(), ""); err != nil {
+				s.log.Error("http child", "err", err)
+				http.Error(w, "upstream server not available", http.StatusBadGateway)
+				return
+			}
+			s.httpMode.proxy.ServeHTTP(w, r)
 		})
 	}
 	return mcp.NewStreamableHTTPHandler(func(r *http.Request) *mcp.Server {

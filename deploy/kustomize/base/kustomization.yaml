@@ -8,6 +8,8 @@ resources:
   - redis.yaml
   - gateway.yaml
   - controller.yaml
+  - egress.yaml
+  - sessions-default-deny.yaml
 configMapGenerator:
   - name: juggernaut-config
     namespace: juggernaut-system

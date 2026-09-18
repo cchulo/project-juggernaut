@@ -1,0 +1,13 @@
+# kind cluster created with deploy/kind/kind-config-cilium.yaml and `cilium install`.
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+resources:
+  - ../kind
+configMapGenerator:
+  - name: juggernaut-config
+    namespace: juggernaut-system
+    behavior: replace
+    files:
+      - juggernaut.yaml
+    options:
+      disableNameSuffixHash: true

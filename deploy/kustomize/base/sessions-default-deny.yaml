@@ -1,0 +1,10 @@
+# Namespace-wide default deny: a session pod without its own policy has no connectivity.
+# The controller also ensures this object exists at startup.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: juggernaut-sessions
+spec:
+  podSelector: {}
+  policyTypes: [Ingress, Egress]

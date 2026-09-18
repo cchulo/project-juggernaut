@@ -1,0 +1,82 @@
+# Fallback egress enforcer (network.egressEnforcer: proxy). Session pods have no
+# DNS and can only reach this proxy; it tunnels CONNECT to allowlisted host:port.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: juggernaut-egress-allowlist
+  namespace: juggernaut-system
+data:
+  allowlist.json: '{"entries":{}}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juggernaut-egress
+  namespace: juggernaut-system
+  labels: { app.kubernetes.io/name: juggernaut-egress }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-egress }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-egress }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: egress
+          image: ghcr.io/cchulo/juggernaut-egress:dev
+          args: ["--listen=:3128", "--allowlist=/etc/juggernaut-egress/allowlist.json"]
+          ports: [{ containerPort: 3128, name: proxy }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: allowlist, mountPath: /etc/juggernaut-egress, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: "1", memory: 256Mi }
+      volumes:
+        - name: allowlist
+          configMap: { name: juggernaut-egress-allowlist }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juggernaut-egress
+  namespace: juggernaut-system
+spec:
+  selector: { app.kubernetes.io/name: juggernaut-egress }
+  ports: [{ port: 3128, targetPort: proxy }]
+---
+# The proxy itself must not be reachable from anything but session pods, and may
+# only talk to the internet on the ports servers declare (443 by default) and DNS.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: juggernaut-egress
+  namespace: juggernaut-system
+spec:
+  podSelector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-egress }
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: juggernaut-sessions }
+      ports: [{ protocol: TCP, port: 3128 }]
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels: { kubernetes.io/metadata.name: kube-system }
+          podSelector:
+            matchLabels: { k8s-app: kube-dns }
+      ports: [{ protocol: UDP, port: 53 }, { protocol: TCP, port: 53 }]
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except: [10.0.0.0/8, 172.16.0.0/12, 192.168.0.0/16, 100.64.0.0/10, 169.254.0.0/16]
