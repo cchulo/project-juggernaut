@@ -1,0 +1,48 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "juggernaut.labels" . | nindent 4 }}
+    app.kubernetes.io/name: juggernaut-controller
+spec:
+  replicas: {{ .Values.controller.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-controller }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-controller }
+      annotations:
+        checksum/config: {{ .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          image: "{{ .Values.image.registry }}/juggernaut-controller:{{ include "juggernaut.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --config=/etc/juggernaut/juggernaut.yaml
+            - --wrapper-image={{ .Values.image.registry }}/juggernaut-wrapper:{{ include "juggernaut.tag" . }}
+            - --leader-elect={{ .Values.controller.leaderElect }}
+          env:
+            - name: JUGGERNAUT_REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: redis-password } }
+          ports:
+            - { containerPort: 8081, name: probes }
+            - { containerPort: 9091, name: metrics }
+          readinessProbe: { httpGet: { path: /readyz, port: probes } }
+          livenessProbe: { httpGet: { path: /healthz, port: probes } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+          resources: {{- toYaml .Values.controller.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: { name: {{ .Release.Name }}-config }

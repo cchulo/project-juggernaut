@@ -1,0 +1,57 @@
+{{- if .Values.keycloak.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-keycloak-realm
+  namespace: {{ .Release.Namespace }}
+data:
+  realm-juggernaut.json: |
+{{ .Files.Get "files/realm-juggernaut.json" | indent 4 }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-keycloak
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "juggernaut.labels" . | nindent 4 }}
+    app.kubernetes.io/name: keycloak
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: keycloak }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: keycloak }
+    spec:
+      containers:
+        - name: keycloak
+          image: {{ .Values.keycloak.image }}
+          args: ["start-dev", {{ if .Values.keycloak.importRealm }}"--import-realm",{{ end }} "--http-port={{ .Values.keycloak.httpPort }}", "--hostname={{ .Values.keycloak.hostname }}"]
+          env:
+            - { name: KC_BOOTSTRAP_ADMIN_USERNAME, value: {{ .Values.keycloak.adminUsername | quote }} }
+            - { name: KC_BOOTSTRAP_ADMIN_PASSWORD, value: {{ .Values.keycloak.adminPassword | quote }} }
+            - { name: KC_FEATURES, value: "token-exchange:v2" }
+          ports: [{ containerPort: {{ .Values.keycloak.httpPort }}, name: http }]
+          volumeMounts:
+            - { name: realm, mountPath: /opt/keycloak/data/import, readOnly: true }
+          resources: {{- toYaml .Values.keycloak.resources | nindent 12 }}
+      volumes:
+        - name: realm
+          configMap: { name: {{ .Release.Name }}-keycloak-realm }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: keycloak
+  namespace: {{ .Release.Namespace }}
+spec:
+  type: {{ .Values.keycloak.service.type }}
+  selector: { app.kubernetes.io/name: keycloak }
+  ports:
+    - port: {{ .Values.keycloak.httpPort }}
+      targetPort: http
+      {{- if .Values.keycloak.service.nodePort }}
+      nodePort: {{ .Values.keycloak.service.nodePort }}
+      {{- end }}
+{{- end }}

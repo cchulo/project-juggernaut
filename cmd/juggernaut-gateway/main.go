@@ -19,14 +19,18 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	jugv1 "github.com/cchulo/project-juggernaut/api/v1alpha1"
+	"github.com/cchulo/project-juggernaut/internal/admin"
+	"github.com/cchulo/project-juggernaut/internal/audit"
 	"github.com/cchulo/project-juggernaut/internal/auth"
 	"github.com/cchulo/project-juggernaut/internal/broker"
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/gateway"
+	"github.com/cchulo/project-juggernaut/internal/router"
 	"github.com/cchulo/project-juggernaut/internal/runtime"
 	"github.com/cchulo/project-juggernaut/internal/runtime/kube"
 	"github.com/cchulo/project-juggernaut/internal/runtime/local"
 	"github.com/cchulo/project-juggernaut/internal/session"
+	"github.com/cchulo/project-juggernaut/internal/telemetry"
 	"github.com/cchulo/project-juggernaut/internal/version"
 )
 
@@ -87,12 +91,89 @@ func run(ctx context.Context, log *slog.Logger, cfgPath, stateDir string) error 
 	srv := gateway.New(gateway.Deps{
 		Store: store, Verifier: verifier, Broker: br, Table: table, Backend: backend, Log: log,
 	})
+	if err := wireHooks(ctx, srv, cfg, store, verifier, br, table, log); err != nil {
+		return err
+	}
 	go func() {
 		if err := store.Watch(ctx); err != nil {
 			log.Error("config watch stopped", "err", err)
 		}
 	}()
 	return srv.Run(ctx)
+}
+
+// wireHooks attaches the milestone-3 features: router, audit, metrics,
+// tracing, introspection and the admin listener.
+func wireHooks(ctx context.Context, srv *gateway.Server, cfg *config.Config, store *config.Store,
+	verifier *auth.Verifier, br broker.Broker, table session.Table, log *slog.Logger) error {
+	metrics := telemetry.New("juggernaut")
+	srv.Hooks.MetricsHandler = metrics.Handler()
+	srv.Hooks.OnAuthFailure = func(reason string) { metrics.AuthFailures.WithLabelValues(reason).Inc() }
+
+	shutdownTracing, err := telemetry.SetupTracing(ctx, cfg.Gateway.Telemetry, log)
+	if err != nil {
+		return fmt.Errorf("tracing: %w", err)
+	}
+	go func() { <-ctx.Done(); _ = shutdownTracing(context.Background()) }()
+
+	auditLog, err := audit.New(cfg.Gateway.Audit, log)
+	if err != nil {
+		return fmt.Errorf("audit: %w", err)
+	}
+	outcome := func(isErr bool, err error) string {
+		switch {
+		case err != nil:
+			return "error"
+		case isErr:
+			return "tool_error"
+		}
+		return "ok"
+	}
+	srv.Hooks.OnToolCall = func(ev gateway.CallEvent) {
+		o := outcome(ev.Status >= 400, ev.Err)
+		metrics.ToolCalls.WithLabelValues(ev.ServerType, o).Inc()
+		metrics.ToolCallSeconds.WithLabelValues(ev.ServerType).Observe(ev.Duration.Seconds())
+		auditLog.Write(audit.Record{Kind: "adapter_request", Subject: ev.Subject, ServerType: ev.ServerType, Pod: ev.PodName,
+			SessionID: ev.SessionID, DurationMS: ev.Duration.Milliseconds(), Outcome: o, Error: errString(ev.Err),
+			Extra: map[string]any{"method": ev.Method, "status": ev.Status}})
+	}
+
+	if cfg.Identity.Introspection.Enabled {
+		srv.Hooks.Introspector = auth.NewIntrospector(cfg.Identity, (*config.SecretRef).Resolve)
+	}
+
+	rt := router.New(store, br, srv.Manager(), table, log)
+	rt.OnCall = func(ev router.CallEvent) {
+		o := outcome(ev.IsError, ev.Err)
+		metrics.ToolCalls.WithLabelValues(ev.ServerType, o).Inc()
+		metrics.ToolCallSeconds.WithLabelValues(ev.ServerType).Observe(ev.Duration.Seconds())
+		auditLog.Write(audit.Record{Kind: "tool_call", Subject: ev.Subject, ServerType: ev.ServerType, Pod: ev.PodName,
+			SessionID: ev.SessionID, Tool: ev.Tool, Upstream: ev.Upstream, Arguments: ev.Arguments,
+			DurationMS: ev.Duration.Milliseconds(), Outcome: o, Error: errString(ev.Err), Lazy: ev.Lazy})
+	}
+	srv.Hooks.RouterHandler = rt.Handler()
+
+	if cfg.Identity.KeycloakAdmin != nil {
+		dir, err := admin.NewKeycloak(cfg.Identity, (*config.SecretRef).Resolve)
+		if err != nil {
+			return fmt.Errorf("admin: %w", err)
+		}
+		adm := &admin.Server{Store: store, Verifier: verifier, Dir: dir, Sessions: srv.Manager(), Log: log}
+		adm.OnAction = func(actor, action, target string) {
+			auditLog.Write(audit.Record{Kind: "admin_action", Subject: actor, Outcome: "ok", Extra: map[string]any{"action": action, "target": target}})
+		}
+		srv.Hooks.AdminHandler = adm.Handler()
+	} else {
+		log.Info("identity.keycloakAdmin not configured; admin UI disabled")
+	}
+	return nil
+}
+
+func errString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return err.Error()
 }
 
 // kubeRuntime wires the Kubernetes backend and the Redis routing table.

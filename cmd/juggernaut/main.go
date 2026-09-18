@@ -7,7 +7,11 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
+	"strings"
+	"time"
 
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/version"
@@ -48,12 +52,107 @@ func main() {
 	case "config":
 		fmt.Fprintln(os.Stderr, "config migrate: nothing to migrate for", config.APIVersion)
 	case "admin":
-		fmt.Fprintln(os.Stderr, "admin login ships in milestone 3")
-		os.Exit(2)
+		if len(os.Args) < 3 || os.Args[2] != "login" {
+			usage()
+			os.Exit(2)
+		}
+		fs := flag.NewFlagSet("admin login", flag.ExitOnError)
+		issuer := fs.String("issuer", os.Getenv("JUGGERNAUT_ISSUER"), "OIDC issuer (e.g. https://kc/realms/juggernaut)")
+		clientID := fs.String("client-id", "juggernaut-admin-ui", "public client with device flow enabled")
+		scope := fs.String("scope", "openid profile juggernaut:users.admin", "scopes to request")
+		_ = fs.Parse(os.Args[3:])
+		if *issuer == "" {
+			fmt.Fprintln(os.Stderr, "--issuer or JUGGERNAUT_ISSUER is required")
+			os.Exit(2)
+		}
+		tok, err := deviceLogin(*issuer, *clientID, *scope)
+		if err != nil {
+			fmt.Fprintln(os.Stderr, "login failed:", err)
+			os.Exit(1)
+		}
+		fmt.Println(tok)
 	default:
 		usage()
 		os.Exit(2)
 	}
+}
+
+// deviceLogin runs the OAuth 2.0 device authorization grant (RFC 8628) and
+// prints the access token for use against the admin API:
+//
+//	curl -H "Authorization: Bearer $(juggernaut admin login)" http://127.0.0.1:24680/admin/api/users
+func deviceLogin(issuer, clientID, scope string) (string, error) {
+	var disc struct {
+		DeviceEndpoint string `json:"device_authorization_endpoint"`
+		TokenEndpoint  string `json:"token_endpoint"`
+	}
+	if err := getJSON(strings.TrimRight(issuer, "/")+"/.well-known/openid-configuration", &disc); err != nil {
+		return "", err
+	}
+	if disc.DeviceEndpoint == "" {
+		return "", fmt.Errorf("issuer does not advertise a device authorization endpoint")
+	}
+	var dev struct {
+		DeviceCode      string `json:"device_code"`
+		UserCode        string `json:"user_code"`
+		VerificationURI string `json:"verification_uri_complete"`
+		VerificationURL string `json:"verification_uri"`
+		Interval        int    `json:"interval"`
+		ExpiresIn       int    `json:"expires_in"`
+	}
+	if err := postForm(disc.DeviceEndpoint, url.Values{"client_id": {clientID}, "scope": {scope}}, &dev); err != nil {
+		return "", err
+	}
+	link := dev.VerificationURI
+	if link == "" {
+		link = dev.VerificationURL + " (code " + dev.UserCode + ")"
+	}
+	fmt.Fprintf(os.Stderr, "Open %s and approve the login.\n", link)
+	interval := time.Duration(max(dev.Interval, 5)) * time.Second
+	deadline := time.Now().Add(time.Duration(dev.ExpiresIn) * time.Second)
+	for time.Now().Before(deadline) {
+		time.Sleep(interval)
+		var tok struct {
+			AccessToken string `json:"access_token"`
+			Error       string `json:"error"`
+		}
+		err := postForm(disc.TokenEndpoint, url.Values{
+			"grant_type": {"urn:ietf:params:oauth:grant-type:device_code"}, "device_code": {dev.DeviceCode}, "client_id": {clientID},
+		}, &tok)
+		if err != nil {
+			return "", err
+		}
+		switch tok.Error {
+		case "":
+			if tok.AccessToken != "" {
+				return tok.AccessToken, nil
+			}
+		case "authorization_pending":
+		case "slow_down":
+			interval += 5 * time.Second
+		default:
+			return "", fmt.Errorf("%s", tok.Error)
+		}
+	}
+	return "", fmt.Errorf("device code expired")
+}
+
+func getJSON(u string, v any) error {
+	resp, err := http.Get(u)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
+}
+
+func postForm(u string, form url.Values, v any) error {
+	resp, err := http.PostForm(u, form)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	return json.NewDecoder(resp.Body).Decode(v)
 }
 
 func usage() {
@@ -63,6 +162,6 @@ func usage() {
   render   -f juggernaut.yaml   print the defaulted config as JSON
   schema                        print the JSON Schema
   config migrate                rewrite an older config version (no-op today)
-  admin login                   obtain an admin token for the admin UI (milestone 3)
+  admin login --issuer URL      obtain an admin token via the device flow (prints it)
   version`)
 }

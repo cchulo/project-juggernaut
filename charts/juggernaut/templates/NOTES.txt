@@ -1,0 +1,17 @@
+Juggernaut {{ .Chart.AppVersion }} is installed in {{ .Release.Namespace }}.
+
+MCP endpoint (port-forward on a laptop):
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ .Release.Name }}-gateway 8080:8080
+  → http://localhost:8080/mcp   (clients discover login via /.well-known/oauth-protected-resource)
+
+Admin UI (loopback only; never on the data listener):
+  kubectl -n {{ .Release.Namespace }} port-forward deploy/{{ .Release.Name }}-gateway 24680:24680
+  → http://127.0.0.1:24680/admin
+{{- if .Values.keycloak.enabled }}
+
+Bundled Keycloak (laptops only): admin / {{ .Values.keycloak.adminPassword }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/keycloak {{ .Values.keycloak.httpPort }}:{{ .Values.keycloak.httpPort }}
+{{- end }}
+
+Validate configuration changes before upgrading:
+  juggernaut validate -f juggernaut.yaml

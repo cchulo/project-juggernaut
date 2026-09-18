@@ -52,6 +52,8 @@ type Hooks struct {
 	AdminHandler http.Handler
 	// MetricsHandler is mounted at /metrics on the metrics listener.
 	MetricsHandler http.Handler
+	// Introspector enables revocation checks on the data plane.
+	Introspector *auth.Introspector
 }
 
 // CallEvent is the audit record of one forwarded request.
@@ -89,7 +91,7 @@ func (s *Server) Router() http.Handler {
 	r.Method(http.MethodGet, auth.PRMPath, auth.PRMHandler(s.Store))
 
 	mcpAuth := &auth.Middleware{Verifier: s.Verifier, Store: s.Store, Log: s.Log,
-		RequiredScope: cfg.Identity.Scopes.MCP, OnAuthFailure: s.Hooks.OnAuthFailure}
+		RequiredScope: cfg.Identity.Scopes.MCP, OnAuthFailure: s.Hooks.OnAuthFailure, Introspector: s.Hooks.Introspector}
 
 	r.Group(func(r chi.Router) {
 		r.Use(mcpAuth.Wrap)

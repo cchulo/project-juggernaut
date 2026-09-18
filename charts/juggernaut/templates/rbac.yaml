@@ -1,0 +1,89 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Values.namespaces.sessions }}
+rules:
+  - apiGroups: ["juggernaut.io"]
+    resources: ["sessions"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["juggernaut.io"]
+    resources: ["servertypes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Values.namespaces.sessions }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-gateway }
+subjects:
+  - { kind: ServiceAccount, name: {{ .Release.Name }}-gateway, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Release.Namespace }}
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Values.namespaces.sessions }}
+rules:
+  - apiGroups: ["juggernaut.io"]
+    resources: ["sessions", "servertypes", "sessions/status", "servertypes/status"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["pods", "secrets", "configmaps", "events"]
+    verbs: ["*"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["*"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-controller
+  namespace: {{ .Values.namespaces.sessions }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-controller }
+subjects:
+  - { kind: ServiceAccount, name: {{ .Release.Name }}-controller, namespace: {{ .Release.Namespace }} }
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ .Release.Name }}-controller-system
+  namespace: {{ .Release.Namespace }}
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["*"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ .Release.Name }}-controller-system
+  namespace: {{ .Release.Namespace }}
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: {{ .Release.Name }}-controller-system }
+subjects:
+  - { kind: ServiceAccount, name: {{ .Release.Name }}-controller, namespace: {{ .Release.Namespace }} }

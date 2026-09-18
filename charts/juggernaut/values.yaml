@@ -1,0 +1,86 @@
+# Default values for juggernaut.
+
+image:
+  registry: ghcr.io/cchulo
+  tag: ""            # defaults to appVersion
+  pullPolicy: IfNotPresent
+
+# The single configuration file. Either inline YAML here or --set-file config=juggernaut.yaml.
+config: ""
+
+# Secrets referenced from juggernaut.yaml by env name. Set `existingSecret` to
+# bring your own Secret with the same keys instead of putting values here.
+secrets:
+  existingSecret: ""
+  brokerClientSecret: ""
+  introspectionClientSecret: ""
+  keycloakAdminSecret: ""
+  redisPassword: ""
+  kek: ""            # base64 of 32 random bytes; generated if empty and no existingSecret
+
+namespaces:
+  system: juggernaut-system   # release namespace is used; this is informational
+  sessions: juggernaut-sessions
+  createSessions: true
+  # Pod Security Admission labels applied to the sessions namespace.
+  sessionsPSA: restricted
+
+gateway:
+  replicas: 1
+  resources:
+    requests: { cpu: 20m, memory: 64Mi }
+    limits: { cpu: "1", memory: 512Mi }
+  service:
+    type: ClusterIP
+    port: 8080
+    nodePort: null
+  ingress:
+    enabled: false
+    className: ""
+    host: mcp.example.internal
+    annotations: {}
+    tls: []
+  # The admin listener is never exposed through the Service unless you set this.
+  exposeAdminOnService: false
+  extraEnv: []
+
+controller:
+  replicas: 1
+  leaderElect: true
+  resources:
+    requests: { cpu: 10m, memory: 48Mi }
+    limits: { cpu: 500m, memory: 256Mi }
+
+egress:
+  # Deploy the fallback egress proxy (network.egressEnforcer: proxy).
+  enabled: true
+  replicas: 1
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: "1", memory: 256Mi }
+
+redis:
+  enabled: true
+  image: docker.io/valkey/valkey:8-alpine
+  resources:
+    requests: { cpu: 10m, memory: 32Mi }
+    limits: { cpu: 500m, memory: 300Mi }
+
+# Bundled Keycloak for laptops. Not for production.
+keycloak:
+  enabled: false
+  image: quay.io/keycloak/keycloak:26.3
+  adminUsername: admin
+  adminPassword: admin
+  hostname: http://localhost:8180
+  httpPort: 8180
+  importRealm: true
+  service:
+    type: ClusterIP
+    nodePort: null
+  resources:
+    requests: { cpu: 200m, memory: 600Mi }
+    limits: { cpu: "2", memory: 1Gi }
+
+serviceMonitor:
+  enabled: false

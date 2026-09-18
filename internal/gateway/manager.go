@@ -154,3 +154,19 @@ func newPodToken() string {
 	}
 	return base64.RawURLEncoding.EncodeToString(b[:])
 }
+
+// SessionsFor returns the session pods of a subject as API views (used by the admin listener).
+func (m *Manager) SessionsFor(ctx context.Context, subject string) ([]any, error) {
+	pods, err := m.table.ListPods(ctx, subject)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]any, 0, len(pods))
+	for _, p := range pods {
+		la, _ := m.table.LastActive(ctx, p.Name)
+		inflight, _ := m.table.InFlight(ctx, p.Name, 0)
+		out = append(out, SessionView{ID: p.Name, Adapter: p.Key.ServerType, User: p.Key.Subject, Phase: string(p.Phase),
+			PodName: p.Name, CreatedAt: p.CreatedAt, LastActiveAt: la, InFlight: inflight})
+	}
+	return out, nil
+}

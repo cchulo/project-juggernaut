@@ -1,0 +1,57 @@
+{{- if .Values.egress.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: juggernaut-egress-allowlist
+  namespace: {{ .Release.Namespace }}
+  annotations:
+    helm.sh/resource-policy: keep   # the controller owns its contents
+data:
+  allowlist.json: '{"entries":{}}'
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-egress
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "juggernaut.labels" . | nindent 4 }}
+    app.kubernetes.io/name: juggernaut-egress
+spec:
+  replicas: {{ .Values.egress.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-egress }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-egress }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: egress
+          image: "{{ .Values.image.registry }}/juggernaut-egress:{{ include "juggernaut.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--listen=:3128", "--allowlist=/etc/juggernaut-egress/allowlist.json"]
+          ports: [{ containerPort: 3128, name: proxy }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: allowlist, mountPath: /etc/juggernaut-egress, readOnly: true }
+          resources: {{- toYaml .Values.egress.resources | nindent 12 }}
+      volumes:
+        - name: allowlist
+          configMap: { name: juggernaut-egress-allowlist }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juggernaut-egress
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector: { app.kubernetes.io/name: juggernaut-egress }
+  ports: [{ port: 3128, targetPort: proxy }]
+{{- end }}

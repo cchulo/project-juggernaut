@@ -19,6 +19,8 @@ type Middleware struct {
 	RequiredScope string
 	// OnAuthFailure is called for metrics; may be nil.
 	OnAuthFailure func(reason string)
+	// Introspector, when set, detects revocation before expiry.
+	Introspector *Introspector
 }
 
 // Wrap returns the protected handler.
@@ -37,6 +39,17 @@ func (m *Middleware) Wrap(next http.Handler) http.Handler {
 			m.challenge(w, cfg, "invalid_token", "token validation failed")
 			m.fail("invalid")
 			return
+		}
+		if m.Introspector != nil {
+			active, ierr := m.Introspector.Active(r.Context(), p)
+			if ierr != nil {
+				m.Log.Warn("introspection failed; accepting token until expiry", "err", ierr)
+			}
+			if !active {
+				m.challenge(w, cfg, "invalid_token", "token revoked")
+				m.fail("revoked")
+				return
+			}
 		}
 		if m.RequiredScope != "" && !p.HasScope(m.RequiredScope) {
 			m.challenge(w, cfg, "insufficient_scope", "scope "+m.RequiredScope+" required")

@@ -1,0 +1,13 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ .Release.Name }}-config
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "juggernaut.labels" . | nindent 4 }}
+data:
+  juggernaut.yaml: |
+{{- if .Values.config }}
+{{ .Values.config | indent 4 }}
+{{- else }}
+{{ .Files.Get "files/juggernaut.example.yaml" | indent 4 }}
+{{- end }}

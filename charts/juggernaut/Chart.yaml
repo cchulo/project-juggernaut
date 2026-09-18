@@ -1,0 +1,10 @@
+apiVersion: v2
+name: juggernaut
+description: Self-hosted, Kubernetes-native MCP gateway with one isolated MCP server pod per user session.
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+kubeVersion: ">=1.29.0-0"
+home: https://github.com/cchulo/project-juggernaut
+sources: [https://github.com/cchulo/project-juggernaut]
+keywords: [mcp, gateway, oauth, keycloak, self-hosted]

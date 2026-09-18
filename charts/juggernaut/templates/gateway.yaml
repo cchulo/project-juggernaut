@@ -1,0 +1,104 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels:
+    {{- include "juggernaut.labels" . | nindent 4 }}
+    app.kubernetes.io/name: juggernaut-gateway
+spec:
+  replicas: {{ .Values.gateway.replicas }}
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-gateway }
+      annotations:
+        checksum/config: {{ .Values.config | sha256sum }}
+    spec:
+      serviceAccountName: {{ .Release.Name }}-gateway
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: gateway
+          image: "{{ .Values.image.registry }}/juggernaut-gateway:{{ include "juggernaut.tag" . }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args: ["--config", "/etc/juggernaut/juggernaut.yaml"]
+          env:
+            - name: JUGGERNAUT_BROKER_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: broker-client-secret } }
+            - name: JUGGERNAUT_INTROSPECTION_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: introspection-client-secret } }
+            - name: JUGGERNAUT_KEYCLOAK_ADMIN_SECRET
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: keycloak-admin-secret } }
+            - name: JUGGERNAUT_REDIS_PASSWORD
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: redis-password } }
+            - name: JUGGERNAUT_KEK
+              valueFrom: { secretKeyRef: { name: {{ include "juggernaut.secretName" . }}, key: kek } }
+            {{- with .Values.gateway.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          ports:
+            - { containerPort: 8080, name: data }
+            - { containerPort: 24680, name: admin }
+            - { containerPort: 9090, name: metrics }
+          readinessProbe: { httpGet: { path: /readyz, port: data } }
+          livenessProbe: { httpGet: { path: /healthz, port: data } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+          resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
+      volumes:
+        - name: config
+          configMap: { name: {{ .Release.Name }}-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "juggernaut.labels" . | nindent 4 }}
+spec:
+  type: {{ .Values.gateway.service.type }}
+  selector: { app.kubernetes.io/name: juggernaut-gateway }
+  ports:
+    - name: data
+      port: {{ .Values.gateway.service.port }}
+      targetPort: data
+      {{- if .Values.gateway.service.nodePort }}
+      nodePort: {{ .Values.gateway.service.nodePort }}
+      {{- end }}
+    - { name: metrics, port: 9090, targetPort: metrics }
+    {{- if .Values.gateway.exposeAdminOnService }}
+    - { name: admin, port: 24680, targetPort: admin }
+    {{- end }}
+{{- if .Values.gateway.ingress.enabled }}
+---
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: {{ .Release.Name }}-gateway
+  namespace: {{ .Release.Namespace }}
+  annotations: {{- toYaml .Values.gateway.ingress.annotations | nindent 4 }}
+spec:
+  {{- with .Values.gateway.ingress.className }}
+  ingressClassName: {{ . }}
+  {{- end }}
+  rules:
+    - host: {{ .Values.gateway.ingress.host }}
+      http:
+        paths:
+          - path: /
+            pathType: Prefix
+            backend:
+              service:
+                name: {{ .Release.Name }}-gateway
+                port: { name: data }
+  {{- with .Values.gateway.ingress.tls }}
+  tls: {{- toYaml . | nindent 4 }}
+  {{- end }}
+{{- end }}

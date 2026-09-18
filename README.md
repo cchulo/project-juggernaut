@@ -40,3 +40,15 @@ Pre-alpha scaffold. Nothing here is production-ready yet.
 | M1 | `…-m1` | per-user pods + idle reaper on kind |
 | M2 | `…-m2` | network isolation |
 | M3 | `…-m3` | lazy tools, audit, admin UI, Helm |
+
+Each milestone has its own document under `docs/MILESTONE-*.md` with the demo checklist.
+
+## Quick tour
+
+```sh
+make build                      # bin/juggernaut, juggernaut-gateway, juggernaut-controller, juggernaut-wrapper, juggernaut-egress
+bin/juggernaut validate -f examples/juggernaut.yaml
+docker compose -f deploy/compose/docker-compose.yaml up   # milestone 0 laptop stack
+kubectl apply -k deploy/kustomize/overlays/kind             # kind cluster
+helm install juggernaut charts/juggernaut --set-file config=juggernaut.yaml
+```

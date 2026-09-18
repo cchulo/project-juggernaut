@@ -1,0 +1,12 @@
+{{- if .Values.namespaces.createSessions }}
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: {{ .Values.namespaces.sessions }}
+  labels:
+    {{- include "juggernaut.labels" . | nindent 4 }}
+    pod-security.kubernetes.io/enforce: {{ .Values.namespaces.sessionsPSA }}
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: {{ .Values.namespaces.sessionsPSA }}
+    pod-security.kubernetes.io/audit: {{ .Values.namespaces.sessionsPSA }}
+{{- end }}

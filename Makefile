@@ -8,7 +8,7 @@ IMAGE_TAG ?= $(VERSION)
 
 BINARIES := juggernaut juggernaut-gateway juggernaut-controller juggernaut-wrapper juggernaut-egress
 
-.PHONY: all build $(BINARIES) test lint fmt vet tidy validate-example generate images helm-lint kustomize-build clean
+.PHONY: all build $(BINARIES) test lint fmt vet tidy validate-example generate images ui helm-lint helm-template kustomize-build clean
 
 all: build
 
@@ -45,8 +45,14 @@ images:
 	  if [ -f images/$$b/Dockerfile ]; then docker build -f images/$$b/Dockerfile -t $(IMAGE_REGISTRY)/$$b:$(IMAGE_TAG) . ; fi; \
 	done
 
+ui:
+	cd ui/admin && npm ci && npm run build
+
 helm-lint:
-	helm lint charts/juggernaut
+	helm lint charts/juggernaut --set config="$$(cat examples/juggernaut.yaml)"
+
+helm-template:
+	helm template juggernaut charts/juggernaut --namespace juggernaut-system --set-file config=deploy/kustomize/base/juggernaut.yaml --set keycloak.enabled=true > /dev/null
 
 kustomize-build:
 	kubectl kustomize deploy/kustomize/overlays/kind > /dev/null
