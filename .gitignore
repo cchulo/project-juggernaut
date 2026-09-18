@@ -1,0 +1,28 @@
+# Go
+bin/
+dist/
+*.test
+*.out
+coverage.*
+vendor/
+
+# Node (admin UI)
+node_modules/
+ui/admin/dist/
+
+# Local dev
+.env
+.env.*
+!.env.example
+*.local.yaml
+kubeconfig*
+!kubeconfig.example
+
+# Helm
+charts/**/charts/
+charts/**/Chart.lock
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
