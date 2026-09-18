@@ -1,0 +1,44 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: redis
+  namespace: juggernaut-system
+  labels: { app.kubernetes.io/name: juggernaut-redis }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-redis }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-redis }
+    spec:
+      automountServiceAccountToken: false
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: redis
+          image: docker.io/valkey/valkey:8-alpine
+          args: ["--save", "", "--appendonly", "no", "--maxmemory", "256mb", "--maxmemory-policy", "allkeys-lru"]
+          ports: [{ containerPort: 6379, name: redis }]
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts: [{ name: data, mountPath: /data }]
+          resources:
+            requests: { cpu: 10m, memory: 32Mi }
+            limits: { cpu: 500m, memory: 300Mi }
+      volumes:
+        - name: data
+          emptyDir: {}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: redis
+  namespace: juggernaut-system
+spec:
+  selector: { app.kubernetes.io/name: juggernaut-redis }
+  ports: [{ port: 6379, targetPort: redis }]

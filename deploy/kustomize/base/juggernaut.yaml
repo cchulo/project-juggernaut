@@ -1,0 +1,35 @@
+# Cluster configuration for the kustomize base. Overlays replace this file.
+apiVersion: juggernaut.io/v1alpha1
+kind: Config
+identity:
+  provider: keycloak
+  issuer: http://keycloak.juggernaut-system.svc:8180/realms/juggernaut
+  audience: juggernaut-gateway
+  broker:
+    mode: exchange
+    clientId: juggernaut-gateway
+    clientSecretRef: { env: JUGGERNAUT_BROKER_CLIENT_SECRET }
+gateway:
+  publicURL: http://localhost:8080
+  runtime: { kind: kube }
+  redis:
+    address: redis.juggernaut-system.svc:6379
+network:
+  sessionsNamespace: juggernaut-sessions
+  egressEnforcer: none
+  allowInsecure: true
+  imagePolicy: { requireDigest: false }
+servers:
+  - name: everything
+    image: ghcr.io/cchulo/example-stdio-server:dev
+    transport: stdio
+    command: ["/usr/local/bin/node"]
+    args: ["/app/node_modules/@modelcontextprotocol/server-everything/dist/index.js", "stdio"]
+    token: { mode: env, audience: everything-mcp, env: EXAMPLE_USER_TOKEN }
+    egress: [{ host: example.com }]
+    security: { writableTmp: true }
+    idleTimeout: 5m
+authorization:
+  groups:
+    - { name: engineering, serverTypes: ["everything"] }
+    - { name: juggernaut-admins, serverTypes: ["*"], admin: true }

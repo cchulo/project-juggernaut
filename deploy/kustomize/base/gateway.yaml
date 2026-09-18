@@ -1,0 +1,58 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juggernaut-gateway
+  namespace: juggernaut-system
+  labels: { app.kubernetes.io/name: juggernaut-gateway }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-gateway }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-gateway }
+    spec:
+      serviceAccountName: juggernaut-gateway
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: gateway
+          image: ghcr.io/cchulo/juggernaut-gateway:dev
+          args: ["--config", "/etc/juggernaut/juggernaut.yaml"]
+          env:
+            - { name: JUGGERNAUT_LOG_LEVEL, value: info }
+            - name: JUGGERNAUT_BROKER_CLIENT_SECRET
+              valueFrom: { secretKeyRef: { name: juggernaut-secrets, key: broker-client-secret } }
+            - name: JUGGERNAUT_KEK
+              valueFrom: { secretKeyRef: { name: juggernaut-secrets, key: kek } }
+          ports:
+            - { containerPort: 8080, name: data }
+            - { containerPort: 24680, name: admin }
+            - { containerPort: 9090, name: metrics }
+          readinessProbe: { httpGet: { path: /readyz, port: data } }
+          livenessProbe: { httpGet: { path: /healthz, port: data } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+          resources:
+            requests: { cpu: 20m, memory: 64Mi }
+            limits: { cpu: "1", memory: 512Mi }
+      volumes:
+        - name: config
+          configMap: { name: juggernaut-config }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: juggernaut-gateway
+  namespace: juggernaut-system
+spec:
+  selector: { app.kubernetes.io/name: juggernaut-gateway }
+  ports:
+    - { name: data, port: 8080, targetPort: data }
+    - { name: admin, port: 24680, targetPort: admin }   # reach with kubectl port-forward only
+    - { name: metrics, port: 9090, targetPort: metrics }

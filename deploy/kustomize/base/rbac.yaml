@@ -1,0 +1,92 @@
+# Gateway: create/read/delete Sessions and create the per-pod token Secret. No Pod rights.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: juggernaut-gateway
+  namespace: juggernaut-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: juggernaut-gateway
+  namespace: juggernaut-sessions
+rules:
+  - apiGroups: ["juggernaut.io"]
+    resources: ["sessions"]
+    verbs: ["get", "list", "watch", "create", "delete"]
+  - apiGroups: ["juggernaut.io"]
+    resources: ["servertypes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["create", "delete"]
+  - apiGroups: [""]
+    resources: ["pods/log"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: juggernaut-gateway
+  namespace: juggernaut-sessions
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: juggernaut-gateway }
+subjects:
+  - { kind: ServiceAccount, name: juggernaut-gateway, namespace: juggernaut-system }
+---
+# Controller: full control over session pods, secrets, configmaps and network policies in the sessions namespace only.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: juggernaut-controller
+  namespace: juggernaut-system
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: juggernaut-controller
+  namespace: juggernaut-sessions
+rules:
+  - apiGroups: ["juggernaut.io"]
+    resources: ["sessions", "servertypes"]
+    verbs: ["*"]
+  - apiGroups: ["juggernaut.io"]
+    resources: ["sessions/status", "servertypes/status"]
+    verbs: ["get", "update", "patch"]
+  - apiGroups: [""]
+    resources: ["pods", "secrets", "configmaps", "events"]
+    verbs: ["*"]
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["networkpolicies"]
+    verbs: ["*"]
+  - apiGroups: ["cilium.io"]
+    resources: ["ciliumnetworkpolicies"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: juggernaut-controller
+  namespace: juggernaut-sessions
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: juggernaut-controller }
+subjects:
+  - { kind: ServiceAccount, name: juggernaut-controller, namespace: juggernaut-system }
+---
+# Leader election lease in its own namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: juggernaut-controller-leader
+  namespace: juggernaut-system
+rules:
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["*"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: juggernaut-controller-leader
+  namespace: juggernaut-system
+roleRef: { apiGroup: rbac.authorization.k8s.io, kind: Role, name: juggernaut-controller-leader }
+subjects:
+  - { kind: ServiceAccount, name: juggernaut-controller, namespace: juggernaut-system }

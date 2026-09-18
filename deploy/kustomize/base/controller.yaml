@@ -1,0 +1,42 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: juggernaut-controller
+  namespace: juggernaut-system
+  labels: { app.kubernetes.io/name: juggernaut-controller }
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app.kubernetes.io/name: juggernaut-controller }
+  template:
+    metadata:
+      labels: { app.kubernetes.io/name: juggernaut-controller }
+    spec:
+      serviceAccountName: juggernaut-controller
+      securityContext:
+        runAsNonRoot: true
+        seccompProfile: { type: RuntimeDefault }
+      containers:
+        - name: controller
+          image: ghcr.io/cchulo/juggernaut-controller:dev
+          args:
+            - --config=/etc/juggernaut/juggernaut.yaml
+            - --wrapper-image=ghcr.io/cchulo/juggernaut-wrapper:dev
+            - --leader-elect=true
+          ports:
+            - { containerPort: 8081, name: probes }
+            - { containerPort: 9091, name: metrics }
+          readinessProbe: { httpGet: { path: /readyz, port: probes } }
+          livenessProbe: { httpGet: { path: /healthz, port: probes } }
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities: { drop: ["ALL"] }
+            readOnlyRootFilesystem: true
+          volumeMounts:
+            - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+          resources:
+            requests: { cpu: 10m, memory: 48Mi }
+            limits: { cpu: 500m, memory: 256Mi }
+      volumes:
+        - name: config
+          configMap: { name: juggernaut-config }

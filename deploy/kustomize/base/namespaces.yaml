@@ -1,0 +1,15 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: juggernaut-system
+---
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: juggernaut-sessions
+  labels:
+    # Pod Security Admission: every session pod must satisfy "restricted".
+    pod-security.kubernetes.io/enforce: restricted
+    pod-security.kubernetes.io/enforce-version: latest
+    pod-security.kubernetes.io/warn: restricted
+    pod-security.kubernetes.io/audit: restricted
