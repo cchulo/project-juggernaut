@@ -1,0 +1,54 @@
+# Milestone 0 laptop stack: Keycloak + gateway. Session "pods" are docker
+# containers the gateway starts on the `juggernaut` network via the host docker
+# socket. There is no isolation in this milestone; it proves the OAuth flow, the
+# token exchange and the stdio wrapper.
+name: juggernaut
+
+services:
+  keycloak:
+    image: quay.io/keycloak/keycloak:26.3
+    command: ["start-dev", "--import-realm", "--http-port=8180", "--hostname=http://localhost:8180"]
+    environment:
+      KC_BOOTSTRAP_ADMIN_USERNAME: admin
+      KC_BOOTSTRAP_ADMIN_PASSWORD: admin
+      KC_FEATURES: token-exchange:v2
+    ports: ["8180:8180"]
+    volumes:
+      - ../keycloak/realm-juggernaut.json:/opt/keycloak/data/import/realm-juggernaut.json:ro
+    healthcheck:
+      test: ["CMD-SHELL", "exec 3<>/dev/tcp/127.0.0.1/9000 && echo -e 'GET /health/ready HTTP/1.1\r\nHost: localhost\r\n\r\n' >&3 && grep -q UP <&3"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  gateway:
+    build:
+      context: ../..
+      dockerfile: images/juggernaut-gateway/Dockerfile
+    image: ghcr.io/cchulo/juggernaut-gateway:dev
+    depends_on:
+      keycloak:
+        condition: service_healthy
+    environment:
+      JUGGERNAUT_CONFIG: /etc/juggernaut/juggernaut.yaml
+      JUGGERNAUT_STATE_DIR: /var/lib/juggernaut
+      JUGGERNAUT_LOG_LEVEL: debug
+      JUGGERNAUT_BROKER_CLIENT_SECRET: juggernaut-gateway-secret
+      JUGGERNAUT_INTROSPECTION_CLIENT_SECRET: juggernaut-gateway-secret
+    ports:
+      - "8080:8080"
+      - "127.0.0.1:24680:24680"
+      - "9090:9090"
+    volumes:
+      - ./juggernaut.yaml:/etc/juggernaut/juggernaut.yaml:ro
+      - state:/var/lib/juggernaut
+      - /var/run/docker.sock:/var/run/docker.sock
+    user: "0:0"   # milestone 0 only: needs the docker socket to spawn session containers
+    networks: [juggernaut]
+
+volumes:
+  state: {}
+
+networks:
+  juggernaut:
+    name: juggernaut

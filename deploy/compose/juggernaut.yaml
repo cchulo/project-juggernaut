@@ -1,0 +1,57 @@
+# Milestone 0 configuration: single user, local docker runtime, no isolation.
+apiVersion: juggernaut.io/v1alpha1
+kind: Config
+
+identity:
+  provider: keycloak
+  issuer: http://localhost:8180/realms/juggernaut
+  audience: juggernaut-gateway
+  broker:
+    mode: exchange
+    clientId: juggernaut-gateway
+    clientSecretRef: { env: JUGGERNAUT_BROKER_CLIENT_SECRET }
+
+gateway:
+  publicURL: http://localhost:8080
+  listeners:
+    data:    { address: ":8080" }
+    admin:   { address: "127.0.0.1:24680" }
+    metrics: { address: ":9090" }
+  runtime:
+    kind: local
+    local:
+      mode: docker
+      network: juggernaut
+  coldStartBudget: 60s
+
+network:
+  egressEnforcer: none
+  allowInsecure: true
+  imagePolicy:
+    requireDigest: false
+
+servers:
+  - name: everything
+    description: MCP reference "everything" server (stdio) behind the wrapper
+    image: ghcr.io/cchulo/example-stdio-server:dev
+    transport: stdio
+    command: ["/usr/local/bin/node"]
+    args: ["/app/node_modules/@modelcontextprotocol/server-everything/dist/index.js", "stdio"]
+    token:
+      mode: env
+      audience: everything-mcp
+      env: EXAMPLE_USER_TOKEN
+    egress:
+      - host: example.com
+    tools:
+      expose:
+        mode: deny
+        names: ["annotatedMessage"]
+
+authorization:
+  groups:
+    - name: engineering
+      serverTypes: ["everything"]
+    - name: juggernaut-admins
+      serverTypes: ["*"]
+      admin: true

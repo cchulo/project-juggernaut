@@ -1,0 +1,387 @@
+// Package config loads, validates and hot-reloads juggernaut.yaml, the single
+// source of truth for a Juggernaut deployment. The Go types mirror
+// schemas/juggernaut.schema.json; the schema is authoritative for structure,
+// Validate() adds the semantic checks the schema cannot express.
+package config
+
+import "time"
+
+// APIVersion is the only config version this build understands.
+const APIVersion = "juggernaut.io/v1alpha1"
+
+// Config is the root of juggernaut.yaml.
+type Config struct {
+	APIVersion    string        `json:"apiVersion"`
+	Kind          string        `json:"kind"`
+	Identity      Identity      `json:"identity"`
+	Gateway       Gateway       `json:"gateway"`
+	Network       Network       `json:"network"`
+	Servers       []Server      `json:"servers"`
+	Authorization Authorization `json:"authorization"`
+}
+
+// Duration is a Go duration in YAML ("15m", "1h30m").
+type Duration struct{ time.Duration }
+
+// SecretRef says where a secret value comes from. Exactly one field is set.
+type SecretRef struct {
+	Env  string `json:"env,omitempty"`
+	File string `json:"file,omitempty"`
+}
+
+// Listener is a bind address with optional TLS.
+type Listener struct {
+	Address string       `json:"address"`
+	TLS     *ListenerTLS `json:"tls,omitempty"`
+}
+
+// ListenerTLS is a certificate pair on disk.
+type ListenerTLS struct {
+	CertFile string `json:"certFile"`
+	KeyFile  string `json:"keyFile"`
+}
+
+// Identity is the IdP connection and token brokering configuration.
+type Identity struct {
+	Provider      string         `json:"provider,omitempty"`
+	Issuer        string         `json:"issuer"`
+	Audience      string         `json:"audience"`
+	JWKSURL       string         `json:"jwksURL,omitempty"`
+	GroupsClaim   string         `json:"groupsClaim,omitempty"`
+	UsernameClaim string         `json:"usernameClaim,omitempty"`
+	Scopes        Scopes         `json:"scopes,omitempty"`
+	Introspection Introspection  `json:"introspection,omitempty"`
+	Broker        Broker         `json:"broker,omitempty"`
+	KeycloakAdmin *KeycloakAdmin `json:"keycloakAdmin,omitempty"`
+}
+
+// Scopes are the OAuth scope names the gateway requires and advertises.
+type Scopes struct {
+	MCP        string `json:"mcp,omitempty"`
+	Admin      string `json:"admin,omitempty"`
+	UsersAdmin string `json:"usersAdmin,omitempty"`
+}
+
+// Introspection configures periodic revocation checks against the IdP.
+type Introspection struct {
+	Enabled         bool       `json:"enabled,omitempty"`
+	Interval        Duration   `json:"interval,omitempty"`
+	Endpoint        string     `json:"endpoint,omitempty"`
+	ClientID        string     `json:"clientId,omitempty"`
+	ClientSecretRef *SecretRef `json:"clientSecretRef,omitempty"`
+}
+
+// BrokerMode selects how downstream per-user tokens are minted.
+type BrokerMode string
+
+const (
+	BrokerExchange     BrokerMode = "exchange"
+	BrokerRefreshToken BrokerMode = "refresh-token"
+	BrokerNone         BrokerMode = "none"
+)
+
+// Broker is the token broker configuration (RFC 8693 exchange by default).
+type Broker struct {
+	Mode            BrokerMode `json:"mode"`
+	TokenEndpoint   string     `json:"tokenEndpoint,omitempty"`
+	ClientID        string     `json:"clientId,omitempty"`
+	ClientSecretRef *SecretRef `json:"clientSecretRef,omitempty"`
+	CacheTTL        Duration   `json:"cacheTTL,omitempty"`
+}
+
+// KeycloakAdmin is the service-account client the admin UI uses.
+type KeycloakAdmin struct {
+	BaseURL         string    `json:"baseURL,omitempty"`
+	Realm           string    `json:"realm"`
+	ClientID        string    `json:"clientId"`
+	ClientSecretRef SecretRef `json:"clientSecretRef"`
+	AdminRole       string    `json:"adminRole,omitempty"`
+}
+
+// RuntimeKind selects where session pods run.
+type RuntimeKind string
+
+const (
+	// RuntimeLocal runs session "pods" as local processes or docker containers (milestone 0).
+	RuntimeLocal RuntimeKind = "local"
+	// RuntimeKube runs session pods on Kubernetes through the controller (milestone 1+).
+	RuntimeKube RuntimeKind = "kube"
+)
+
+// Gateway holds gateway-wide settings.
+type Gateway struct {
+	PublicURL          string    `json:"publicURL"`
+	Listeners          Listeners `json:"listeners,omitempty"`
+	AllowInsecureAdmin bool      `json:"allowInsecureAdmin,omitempty"`
+	Runtime            Runtime   `json:"runtime,omitempty"`
+	ColdStartBudget    Duration  `json:"coldStartBudget,omitempty"`
+	IdleTimeout        Duration  `json:"idleTimeout,omitempty"`
+	MaxSessionAge      Duration  `json:"maxSessionAge,omitempty"`
+	MaxBodyBytes       int64     `json:"maxBodyBytes,omitempty"`
+	Caps               Caps      `json:"caps,omitempty"`
+	Tools              ToolsOpts `json:"tools,omitempty"`
+	Redis              *Redis    `json:"redis,omitempty"`
+	Audit              Audit     `json:"audit,omitempty"`
+	Telemetry          Telemetry `json:"telemetry,omitempty"`
+}
+
+// Runtime selects and configures the session backend.
+type Runtime struct {
+	Kind  RuntimeKind   `json:"kind,omitempty"`
+	Local *LocalRuntime `json:"local,omitempty"`
+}
+
+// LocalRuntime configures the milestone-0 backend.
+type LocalRuntime struct {
+	// Mode is "docker" (docker run per session) or "process" (exec the wrapper binary directly).
+	Mode string `json:"mode,omitempty"`
+	// WrapperBinary is the path to juggernaut-wrapper for process mode.
+	WrapperBinary string `json:"wrapperBinary,omitempty"`
+	// Network is the docker network to attach session containers to.
+	Network string `json:"network,omitempty"`
+	// PortRange is "from-to" for host ports in process mode.
+	PortRange string `json:"portRange,omitempty"`
+}
+
+// Listeners are the three listeners of the gateway.
+type Listeners struct {
+	Data    Listener `json:"data,omitempty"`
+	Admin   Listener `json:"admin,omitempty"`
+	Metrics Listener `json:"metrics,omitempty"`
+}
+
+// Caps are cluster-wide hard limits.
+type Caps struct {
+	PodsPerUser int `json:"podsPerUser,omitempty"`
+	TotalPods   int `json:"totalPods,omitempty"`
+}
+
+// ToolsOpts controls eager vs lazy tool loading.
+type ToolsOpts struct {
+	DefaultLoading     string   `json:"defaultLoading,omitempty"`
+	LazyForClients     []string `json:"lazyForClients,omitempty"`
+	LazyForGroups      []string `json:"lazyForGroups,omitempty"`
+	NamespaceSeparator string   `json:"namespaceSeparator,omitempty"`
+}
+
+// Redis is the routing-table store.
+type Redis struct {
+	Address     string     `json:"address"`
+	PasswordRef *SecretRef `json:"passwordRef,omitempty"`
+	DB          int        `json:"db,omitempty"`
+	KeyPrefix   string     `json:"keyPrefix,omitempty"`
+	TLS         bool       `json:"tls,omitempty"`
+}
+
+// Audit configures the tool-call audit log.
+type Audit struct {
+	Sink            string   `json:"sink,omitempty"`
+	File            string   `json:"file,omitempty"`
+	RedactArguments []string `json:"redactArguments,omitempty"`
+}
+
+// Telemetry configures OpenTelemetry export.
+type Telemetry struct {
+	OTLPEndpoint string  `json:"otlpEndpoint,omitempty"`
+	ServiceName  string  `json:"serviceName,omitempty"`
+	SampleRatio  float64 `json:"sampleRatio,omitempty"`
+}
+
+// EgressEnforcer selects the hostname-level egress mechanism.
+type EgressEnforcer string
+
+const (
+	EgressCilium EgressEnforcer = "cilium"
+	EgressProxy  EgressEnforcer = "proxy"
+	EgressNone   EgressEnforcer = "none"
+)
+
+// Network holds isolation settings.
+type Network struct {
+	SessionsNamespace  string            `json:"sessionsNamespace,omitempty"`
+	NamespacePerGroup  bool              `json:"namespacePerGroup,omitempty"`
+	EgressEnforcer     EgressEnforcer    `json:"egressEnforcer,omitempty"`
+	Proxy              *ProxyNetwork     `json:"proxy,omitempty"`
+	PodAuth            string            `json:"podAuth,omitempty"`
+	GatewayPodSelector map[string]string `json:"gatewayPodSelector,omitempty"`
+	DenyCIDRs          []string          `json:"denyCIDRs,omitempty"`
+	APIServerCIDR      string            `json:"apiServerCIDR,omitempty"`
+	ImagePolicy        ImagePolicy       `json:"imagePolicy,omitempty"`
+	AllowInsecure      bool              `json:"allowInsecure,omitempty"`
+}
+
+// ProxyNetwork is the egress proxy address for proxy mode.
+type ProxyNetwork struct {
+	Address string `json:"address,omitempty"`
+}
+
+// ImagePolicy controls which images may be spawned.
+type ImagePolicy struct {
+	RequireDigest bool   `json:"requireDigest,omitempty"`
+	Cosign        Cosign `json:"cosign,omitempty"`
+}
+
+// Cosign enables signature verification of session images.
+type Cosign struct {
+	Enabled      bool       `json:"enabled,omitempty"`
+	PublicKeyRef *SecretRef `json:"publicKeyRef,omitempty"`
+}
+
+// Transport is the MCP transport an upstream server speaks.
+type Transport string
+
+const (
+	TransportStdio          Transport = "stdio"
+	TransportStreamableHTTP Transport = "streamable-http"
+	TransportSSE            Transport = "sse"
+)
+
+// Server is one server type (an "adapter" in API terms).
+type Server struct {
+	Name             string            `json:"name"`
+	Description      string            `json:"description,omitempty"`
+	Image            string            `json:"image"`
+	Transport        Transport         `json:"transport"`
+	Command          []string          `json:"command,omitempty"`
+	Args             []string          `json:"args,omitempty"`
+	Env              map[string]string `json:"env,omitempty"`
+	EnvFrom          []SecretRef       `json:"envFrom,omitempty"`
+	HTTP             *HTTPServer       `json:"http,omitempty"`
+	Wrapper          Wrapper           `json:"wrapper,omitempty"`
+	Token            Token             `json:"token"`
+	Egress           []Egress          `json:"egress,omitempty"`
+	Resources        Resources         `json:"resources,omitempty"`
+	RuntimeClassName string            `json:"runtimeClassName,omitempty"`
+	IdleTimeout      Duration          `json:"idleTimeout,omitempty"`
+	MaxSessionAge    Duration          `json:"maxSessionAge,omitempty"`
+	MaxPods          int               `json:"maxPods,omitempty"`
+	Security         Security          `json:"security,omitempty"`
+	Tools            ToolExposure      `json:"tools,omitempty"`
+}
+
+// HTTPServer describes where an HTTP-transport server listens inside the pod.
+type HTTPServer struct {
+	Port    int    `json:"port,omitempty"`
+	Path    string `json:"path,omitempty"`
+	SSEPath string `json:"ssePath,omitempty"`
+}
+
+// Wrapper configures the in-pod stdio wrapper.
+type Wrapper struct {
+	Restart        RestartPolicy `json:"restart,omitempty"`
+	StartupTimeout Duration      `json:"startupTimeout,omitempty"`
+	LogRedaction   *bool         `json:"logRedaction,omitempty"`
+	Port           int           `json:"port,omitempty"`
+	ReadinessPort  int           `json:"readinessPort,omitempty"`
+}
+
+// RestartPolicy bounds child restarts.
+type RestartPolicy struct {
+	MaxRestarts int      `json:"maxRestarts,omitempty"`
+	Window      Duration `json:"window,omitempty"`
+	BackoffMax  Duration `json:"backoffMax,omitempty"`
+}
+
+// TokenMode says how the per-user token reaches the server process.
+type TokenMode string
+
+const (
+	TokenEnv    TokenMode = "env"
+	TokenFile   TokenMode = "file"
+	TokenHeader TokenMode = "header"
+	TokenStatic TokenMode = "static"
+	TokenNone   TokenMode = "none"
+)
+
+// Token is the per-server token configuration.
+type Token struct {
+	Mode      TokenMode  `json:"mode"`
+	Audience  string     `json:"audience,omitempty"`
+	Scopes    []string   `json:"scopes,omitempty"`
+	Env       string     `json:"env,omitempty"`
+	File      string     `json:"file,omitempty"`
+	Header    string     `json:"header,omitempty"`
+	Scheme    string     `json:"scheme,omitempty"`
+	StaticRef *SecretRef `json:"staticRef,omitempty"`
+}
+
+// Egress is one allowed destination.
+type Egress struct {
+	Host     string `json:"host"`
+	Ports    []int  `json:"ports,omitempty"`
+	Protocol string `json:"protocol,omitempty"`
+}
+
+// Resources are Kubernetes resource requests/limits.
+type Resources struct {
+	Requests ResourceList `json:"requests,omitempty"`
+	Limits   ResourceList `json:"limits,omitempty"`
+}
+
+// ResourceList mirrors corev1.ResourceList with string quantities.
+type ResourceList struct {
+	CPU              Quantity `json:"cpu,omitempty"`
+	Memory           Quantity `json:"memory,omitempty"`
+	EphemeralStorage Quantity `json:"ephemeral-storage,omitempty"`
+}
+
+// Security relaxes or tightens the restricted pod defaults per server.
+type Security struct {
+	WritableTmp            bool     `json:"writableTmp,omitempty"`
+	RunAsUser              int64    `json:"runAsUser,omitempty"`
+	RunAsGroup             int64    `json:"runAsGroup,omitempty"`
+	ReadOnlyRootFilesystem *bool    `json:"readOnlyRootFilesystem,omitempty"`
+	ExtraWritablePaths     []string `json:"extraWritablePaths,omitempty"`
+}
+
+// ToolExposure filters, renames and scopes tools of a server.
+type ToolExposure struct {
+	Expose *Expose             `json:"expose,omitempty"`
+	Prefix string              `json:"prefix,omitempty"`
+	Rename map[string]string   `json:"rename,omitempty"`
+	Groups map[string][]string `json:"groups,omitempty"`
+}
+
+// Expose is an allow or deny list of upstream tool names.
+type Expose struct {
+	Mode  string   `json:"mode"`
+	Names []string `json:"names,omitempty"`
+}
+
+// Authorization maps IdP groups to server types.
+type Authorization struct {
+	Groups []Group `json:"groups"`
+}
+
+// Group is one IdP group's grants.
+type Group struct {
+	Name        string      `json:"name"`
+	ServerTypes []string    `json:"serverTypes"`
+	PodsPerUser int         `json:"podsPerUser,omitempty"`
+	Admin       bool        `json:"admin,omitempty"`
+	Tools       *GroupTools `json:"tools,omitempty"`
+}
+
+// GroupTools holds per-group tool options.
+type GroupTools struct {
+	Loading string `json:"loading,omitempty"`
+}
+
+// Server returns the server type with the given name, or nil.
+func (c *Config) Server(name string) *Server {
+	for i := range c.Servers {
+		if c.Servers[i].Name == name {
+			return &c.Servers[i]
+		}
+	}
+	return nil
+}
+
+// ServerNames lists configured server type names in file order.
+func (c *Config) ServerNames() []string {
+	out := make([]string, 0, len(c.Servers))
+	for _, s := range c.Servers {
+		out = append(out, s.Name)
+	}
+	return out
+}

@@ -1,0 +1,144 @@
+{
+  "realm": "juggernaut",
+  "enabled": true,
+  "displayName": "Juggernaut",
+  "sslRequired": "external",
+  "registrationAllowed": false,
+  "accessTokenLifespan": 900,
+  "ssoSessionIdleTimeout": 43200,
+  "roles": {
+    "realm": [
+      { "name": "juggernaut-admin", "description": "May use the Juggernaut admin UI" }
+    ]
+  },
+  "groups": [
+    { "name": "engineering", "path": "/engineering" },
+    { "name": "product", "path": "/product" },
+    { "name": "support", "path": "/support" },
+    { "name": "juggernaut-admins", "path": "/juggernaut-admins", "realmRoles": ["juggernaut-admin"] }
+  ],
+  "clientScopes": [
+    {
+      "name": "juggernaut:mcp",
+      "description": "Access the MCP data plane",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true", "display.on.consent.screen": "true" },
+      "protocolMappers": [
+        {
+          "name": "gateway-audience",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-audience-mapper",
+          "config": { "included.client.audience": "juggernaut-gateway", "access.token.claim": "true" }
+        },
+        {
+          "name": "groups",
+          "protocol": "openid-connect",
+          "protocolMapper": "oidc-group-membership-mapper",
+          "config": { "claim.name": "groups", "full.path": "false", "access.token.claim": "true", "id.token.claim": "true" }
+        }
+      ]
+    },
+    {
+      "name": "juggernaut:admin",
+      "description": "Control-plane mutations and cross-user reads",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true" }
+    },
+    {
+      "name": "juggernaut:users.admin",
+      "description": "Admin UI: manage users",
+      "protocol": "openid-connect",
+      "attributes": { "include.in.token.scope": "true" }
+    }
+  ],
+  "clients": [
+    {
+      "clientId": "juggernaut-gateway",
+      "name": "Juggernaut gateway (resource server + token exchange requester)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "juggernaut-gateway-secret",
+      "standardFlowEnabled": false,
+      "directAccessGrantsEnabled": false,
+      "serviceAccountsEnabled": true,
+      "attributes": { "standard.token.exchange.enabled": "true" },
+      "defaultClientScopes": ["juggernaut:mcp"],
+      "optionalClientScopes": ["juggernaut:admin"]
+    },
+    {
+      "clientId": "mcp-client",
+      "name": "MCP clients (Claude Code, Cursor, VS Code) - public PKCE client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "directAccessGrantsEnabled": false,
+      "redirectUris": ["http://localhost:*", "http://127.0.0.1:*", "vscode://*", "cursor://*"],
+      "webOrigins": ["+"],
+      "attributes": { "pkce.code.challenge.method": "S256", "post.logout.redirect.uris": "+" },
+      "defaultClientScopes": ["openid", "profile", "email", "juggernaut:mcp"],
+      "optionalClientScopes": ["juggernaut:admin"]
+    },
+    {
+      "clientId": "juggernaut-admin",
+      "name": "Admin UI service account (Keycloak Admin REST)",
+      "enabled": true,
+      "publicClient": false,
+      "secret": "juggernaut-admin-secret",
+      "standardFlowEnabled": false,
+      "serviceAccountsEnabled": true,
+      "_comment": "Grant realm-management client roles view-users, manage-users, query-users, query-groups, view-realm to the service account. Nothing else."
+    },
+    {
+      "clientId": "juggernaut-admin-ui",
+      "name": "Admin UI browser client",
+      "enabled": true,
+      "publicClient": true,
+      "standardFlowEnabled": true,
+      "redirectUris": ["http://127.0.0.1:24680/admin/callback", "http://localhost:24680/admin/callback"],
+      "webOrigins": ["http://127.0.0.1:24680", "http://localhost:24680"],
+      "attributes": { "pkce.code.challenge.method": "S256" },
+      "defaultClientScopes": ["openid", "profile", "juggernaut:users.admin"]
+    },
+    {
+      "clientId": "everything-mcp",
+      "name": "Audience for tokens exchanged for the 'everything' server type",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true
+    },
+    {
+      "clientId": "jira-mcp",
+      "name": "Audience for tokens exchanged for the 'jira' server type",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true
+    },
+    {
+      "clientId": "github-mcp",
+      "name": "Audience for tokens exchanged for the 'github' server type",
+      "enabled": true,
+      "publicClient": false,
+      "bearerOnly": true
+    }
+  ],
+  "users": [
+    {
+      "username": "alice",
+      "enabled": true,
+      "email": "alice@example.internal",
+      "firstName": "Alice",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "alice", "temporary": false }],
+      "groups": ["/engineering", "/juggernaut-admins"]
+    },
+    {
+      "username": "bob",
+      "enabled": true,
+      "email": "bob@example.internal",
+      "firstName": "Bob",
+      "lastName": "Example",
+      "credentials": [{ "type": "password", "value": "bob", "temporary": false }],
+      "groups": ["/support"]
+    }
+  ]
+}
