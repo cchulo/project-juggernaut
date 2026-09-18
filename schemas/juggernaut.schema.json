@@ -1,0 +1,385 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://juggernaut.io/schemas/v1alpha1/juggernaut.schema.json",
+  "title": "Juggernaut configuration (juggernaut.yaml)",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["apiVersion", "kind", "identity", "gateway", "servers", "authorization"],
+  "properties": {
+    "apiVersion": { "const": "juggernaut.io/v1alpha1" },
+    "kind": { "const": "Config" },
+    "identity": { "$ref": "#/$defs/Identity" },
+    "gateway": { "$ref": "#/$defs/Gateway" },
+    "network": { "$ref": "#/$defs/Network" },
+    "servers": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/Server" }
+    },
+    "authorization": { "$ref": "#/$defs/Authorization" }
+  },
+  "$defs": {
+    "Duration": {
+      "type": "string",
+      "pattern": "^([0-9]+(\\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$",
+      "description": "Go duration string, e.g. 15m, 1h30m"
+    },
+    "SecretRef": {
+      "type": "object",
+      "additionalProperties": false,
+      "description": "Where a secret value comes from. Exactly one of env or file.",
+      "properties": {
+        "env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$" },
+        "file": { "type": "string" }
+      },
+      "oneOf": [{ "required": ["env"] }, { "required": ["file"] }]
+    },
+    "Listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["address"],
+      "properties": {
+        "address": { "type": "string", "description": "host:port; ':8080' binds all interfaces" },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["certFile", "keyFile"],
+          "properties": { "certFile": { "type": "string" }, "keyFile": { "type": "string" } }
+        }
+      }
+    },
+    "Identity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["issuer", "audience"],
+      "properties": {
+        "provider": { "type": "string", "enum": ["keycloak", "entra", "okta", "dex", "generic"], "default": "generic" },
+        "issuer": { "type": "string", "format": "uri" },
+        "audience": { "type": "string", "minLength": 1 },
+        "jwksURL": { "type": "string", "format": "uri" },
+        "groupsClaim": { "type": "string", "default": "groups" },
+        "usernameClaim": { "type": "string", "default": "preferred_username" },
+        "scopes": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "mcp": { "type": "string", "default": "juggernaut:mcp" },
+            "admin": { "type": "string", "default": "juggernaut:admin" },
+            "usersAdmin": { "type": "string", "default": "juggernaut:users.admin" }
+          }
+        },
+        "introspection": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": { "type": "boolean", "default": false },
+            "interval": { "$ref": "#/$defs/Duration", "default": "60s" },
+            "endpoint": { "type": "string", "format": "uri" },
+            "clientId": { "type": "string" },
+            "clientSecretRef": { "$ref": "#/$defs/SecretRef" }
+          }
+        },
+        "broker": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["exchange", "refresh-token", "none"] },
+            "tokenEndpoint": { "type": "string", "format": "uri" },
+            "clientId": { "type": "string" },
+            "clientSecretRef": { "$ref": "#/$defs/SecretRef" },
+            "cacheTTL": { "$ref": "#/$defs/Duration", "default": "5m" }
+          }
+        },
+        "keycloakAdmin": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["realm", "clientId", "clientSecretRef"],
+          "properties": {
+            "baseURL": { "type": "string", "format": "uri", "description": "defaults to the issuer's origin" },
+            "realm": { "type": "string" },
+            "clientId": { "type": "string" },
+            "clientSecretRef": { "$ref": "#/$defs/SecretRef" },
+            "adminRole": { "type": "string", "default": "juggernaut-admin" }
+          }
+        }
+      }
+    },
+    "Gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["publicURL"],
+      "properties": {
+        "publicURL": { "type": "string", "format": "uri" },
+        "listeners": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "data": { "$ref": "#/$defs/Listener" },
+            "admin": { "$ref": "#/$defs/Listener" },
+            "metrics": { "$ref": "#/$defs/Listener" }
+          }
+        },
+        "allowInsecureAdmin": { "type": "boolean", "default": false },
+        "coldStartBudget": { "$ref": "#/$defs/Duration", "default": "60s" },
+        "idleTimeout": { "$ref": "#/$defs/Duration", "default": "15m" },
+        "maxSessionAge": { "$ref": "#/$defs/Duration", "default": "12h" },
+        "maxBodyBytes": { "type": "integer", "minimum": 1024, "default": 4194304 },
+        "caps": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "podsPerUser": { "type": "integer", "minimum": 1, "default": 5 },
+            "totalPods": { "type": "integer", "minimum": 1, "default": 2000 }
+          }
+        },
+        "tools": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "defaultLoading": { "type": "string", "enum": ["eager", "lazy"], "default": "eager" },
+            "lazyForClients": { "type": "array", "items": { "type": "string" } },
+            "lazyForGroups": { "type": "array", "items": { "type": "string" } },
+            "namespaceSeparator": { "type": "string", "default": "__" }
+          }
+        },
+        "redis": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["address"],
+          "properties": {
+            "address": { "type": "string" },
+            "passwordRef": { "$ref": "#/$defs/SecretRef" },
+            "db": { "type": "integer", "minimum": 0, "default": 0 },
+            "keyPrefix": { "type": "string", "default": "jg:" },
+            "tls": { "type": "boolean", "default": false }
+          }
+        },
+        "audit": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "sink": { "type": "string", "enum": ["stdout", "file", "otlp"], "default": "stdout" },
+            "file": { "type": "string" },
+            "redactArguments": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "telemetry": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "otlpEndpoint": { "type": "string" },
+            "serviceName": { "type": "string", "default": "juggernaut-gateway" },
+            "sampleRatio": { "type": "number", "minimum": 0, "maximum": 1, "default": 0.1 }
+          }
+        }
+      }
+    },
+    "Network": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "sessionsNamespace": { "type": "string", "default": "juggernaut-sessions" },
+        "namespacePerGroup": { "type": "boolean", "default": false },
+        "egressEnforcer": { "type": "string", "enum": ["cilium", "proxy", "none"], "default": "cilium" },
+        "proxy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": { "address": { "type": "string" } }
+        },
+        "podAuth": { "type": "string", "enum": ["shared-secret", "mtls"], "default": "shared-secret" },
+        "gatewayPodSelector": {
+          "type": "object",
+          "additionalProperties": { "type": "string" },
+          "default": { "app.kubernetes.io/name": "juggernaut-gateway" }
+        },
+        "denyCIDRs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "default": ["169.254.169.254/32", "169.254.0.0/16", "fd00::/8"]
+        },
+        "apiServerCIDR": { "type": "string" },
+        "imagePolicy": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "requireDigest": { "type": "boolean", "default": true },
+            "cosign": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "enabled": { "type": "boolean", "default": false },
+                "publicKeyRef": { "$ref": "#/$defs/SecretRef" }
+              }
+            }
+          }
+        },
+        "allowInsecure": { "type": "boolean", "default": false, "description": "permit egressEnforcer: none (laptops only)" }
+      }
+    },
+    "Egress": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["host"],
+      "properties": {
+        "host": { "type": "string", "pattern": "^(\\*\\.)?([a-z0-9-]+\\.)+[a-z0-9-]+$" },
+        "ports": { "type": "array", "items": { "type": "integer", "minimum": 1, "maximum": 65535 }, "default": [443] },
+        "protocol": { "type": "string", "enum": ["TCP", "UDP"], "default": "TCP" }
+      }
+    },
+    "Resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "requests": { "$ref": "#/$defs/ResourceList" },
+        "limits": { "$ref": "#/$defs/ResourceList" }
+      }
+    },
+    "ResourceList": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "cpu": { "type": ["string", "number"] },
+        "memory": { "type": "string" },
+        "ephemeral-storage": { "type": "string" }
+      }
+    },
+    "Token": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["mode"],
+      "properties": {
+        "mode": { "type": "string", "enum": ["env", "file", "header", "static", "none"] },
+        "audience": { "type": "string", "description": "RFC 8693 audience for exchange mode" },
+        "scopes": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "string", "pattern": "^[A-Z_][A-Z0-9_]*$", "description": "mode=env: variable the child reads" },
+        "file": { "type": "string", "default": "/run/juggernaut/token", "description": "mode=file: tmpfs path" },
+        "header": { "type": "string", "default": "Authorization", "description": "mode=header: header name" },
+        "scheme": { "type": "string", "default": "Bearer" },
+        "staticRef": { "$ref": "#/$defs/SecretRef", "description": "mode=static: shared credential (discouraged)" }
+      },
+      "allOf": [
+        { "if": { "properties": { "mode": { "const": "env" } } }, "then": { "required": ["env"] } },
+        { "if": { "properties": { "mode": { "const": "static" } } }, "then": { "required": ["staticRef"] } }
+      ]
+    },
+    "ToolExposure": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "expose": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["mode"],
+          "properties": {
+            "mode": { "type": "string", "enum": ["allow", "deny", "all"] },
+            "names": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "prefix": { "type": "string" },
+        "rename": { "type": "object", "additionalProperties": { "type": "string" } },
+        "groups": {
+          "type": "object",
+          "description": "tool name -> groups that may see it",
+          "additionalProperties": { "type": "array", "items": { "type": "string" } }
+        }
+      }
+    },
+    "Wrapper": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "restart": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "maxRestarts": { "type": "integer", "minimum": 0, "default": 5 },
+            "window": { "$ref": "#/$defs/Duration", "default": "10m" },
+            "backoffMax": { "$ref": "#/$defs/Duration", "default": "30s" }
+          }
+        },
+        "startupTimeout": { "$ref": "#/$defs/Duration", "default": "20s" },
+        "logRedaction": { "type": "boolean", "default": true },
+        "port": { "type": "integer", "default": 9000 },
+        "readinessPort": { "type": "integer", "default": 9001 }
+      }
+    },
+    "Server": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "image", "transport", "token"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$" },
+        "description": { "type": "string" },
+        "image": { "type": "string", "minLength": 1 },
+        "transport": { "type": "string", "enum": ["stdio", "streamable-http", "sse"] },
+        "command": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+        "args": { "type": "array", "items": { "type": "string" } },
+        "env": { "type": "object", "additionalProperties": { "type": "string" } },
+        "envFrom": { "type": "array", "items": { "$ref": "#/$defs/SecretRef" } },
+        "http": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "port": { "type": "integer", "minimum": 1, "maximum": 65535, "default": 8081 },
+            "path": { "type": "string", "default": "/mcp" },
+            "ssePath": { "type": "string", "default": "/sse" }
+          }
+        },
+        "wrapper": { "$ref": "#/$defs/Wrapper" },
+        "token": { "$ref": "#/$defs/Token" },
+        "egress": { "type": "array", "items": { "$ref": "#/$defs/Egress" } },
+        "resources": { "$ref": "#/$defs/Resources" },
+        "runtimeClassName": { "type": "string" },
+        "idleTimeout": { "$ref": "#/$defs/Duration" },
+        "maxSessionAge": { "$ref": "#/$defs/Duration" },
+        "maxPods": { "type": "integer", "minimum": 1, "default": 200 },
+        "security": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "writableTmp": { "type": "boolean", "default": false },
+            "runAsUser": { "type": "integer", "minimum": 1, "default": 65532 },
+            "runAsGroup": { "type": "integer", "minimum": 1, "default": 65532 },
+            "readOnlyRootFilesystem": { "type": "boolean", "default": true },
+            "extraWritablePaths": { "type": "array", "items": { "type": "string" } }
+          }
+        },
+        "tools": { "$ref": "#/$defs/ToolExposure" }
+      },
+      "allOf": [
+        { "if": { "properties": { "transport": { "const": "stdio" } } }, "then": { "required": ["command"] } },
+        {
+          "if": { "properties": { "transport": { "const": "stdio" } } },
+          "then": { "properties": { "token": { "properties": { "mode": { "not": { "const": "header" } } } } } }
+        }
+      ]
+    },
+    "Authorization": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groups"],
+      "properties": {
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["name", "serverTypes"],
+            "properties": {
+              "name": { "type": "string" },
+              "serverTypes": { "type": "array", "items": { "type": "string" }, "minItems": 1 },
+              "podsPerUser": { "type": "integer", "minimum": 1 },
+              "admin": { "type": "boolean", "default": false },
+              "tools": {
+                "type": "object",
+                "additionalProperties": false,
+                "properties": { "loading": { "type": "string", "enum": ["eager", "lazy"] } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+}

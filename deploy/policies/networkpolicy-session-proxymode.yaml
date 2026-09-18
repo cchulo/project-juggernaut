@@ -1,0 +1,33 @@
+# Proxy-mode variant: the pod may reach ONLY the egress proxy. No DNS at all
+# (the pod is also given dnsPolicy: None with an empty nameserver list).
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: session-jira-3f9a1c2b
+  namespace: juggernaut-sessions
+spec:
+  podSelector:
+    matchLabels:
+      juggernaut.io/session-id: jira-3f9a1c2b
+  policyTypes: [Ingress, Egress]
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: juggernaut-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: juggernaut-gateway
+      ports:
+        - { protocol: TCP, port: 9000 }
+        - { protocol: TCP, port: 9001 }
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: juggernaut-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: juggernaut-egress
+      ports:
+        - { protocol: TCP, port: 3128 }

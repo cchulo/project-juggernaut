@@ -1,0 +1,15 @@
+# kind cluster with the default CNI disabled so Cilium can be installed:
+#   kind create cluster --config deploy/kind/kind-config-cilium.yaml
+#   cilium install --set dnsProxy.enableTransparentMode=true
+kind: Cluster
+apiVersion: kind.x-k8s.io/v1alpha4
+name: juggernaut
+networking:
+  disableDefaultCNI: true
+  kubeProxyMode: none
+nodes:
+  - role: control-plane
+    extraPortMappings:
+      - { containerPort: 30080, hostPort: 8080 }
+      - { containerPort: 30680, hostPort: 24680 }
+      - { containerPort: 30880, hostPort: 8180 }

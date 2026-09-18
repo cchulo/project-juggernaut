@@ -1,0 +1,575 @@
+openapi: 3.1.0
+info:
+  title: Juggernaut MCP Gateway API
+  version: 0.1.0-alpha
+  description: |
+    Control plane (read-mostly) and data plane of the Juggernaut MCP gateway.
+
+    The shape follows microsoft/mcp-gateway (`/adapters`, `/tools`, `/mcp`, `/adapters/{name}/mcp`).
+    Deliberate divergences are marked `x-juggernaut-divergence` on the operation.
+
+    Data-plane endpoints are OAuth 2.0 protected resources per the MCP authorization
+    specification (2025-06-18). Unauthenticated requests receive `401` with
+    `WWW-Authenticate: Bearer resource_metadata="<publicURL>/.well-known/oauth-protected-resource"`.
+servers:
+  - url: https://mcp.example.internal
+    description: data + control plane listener
+  - url: http://127.0.0.1:24680
+    description: admin listener (loopback by default; separate http.Server)
+
+security:
+  - bearer: []
+
+tags:
+  - name: discovery
+  - name: data-plane
+  - name: adapters
+  - name: tools
+  - name: sessions
+  - name: users
+  - name: admin-ui
+  - name: ops
+
+paths:
+  /.well-known/oauth-protected-resource:
+    get:
+      tags: [discovery]
+      security: []
+      summary: OAuth 2.0 protected resource metadata (RFC 9728)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/ProtectedResourceMetadata" }
+
+  /mcp:
+    post:
+      tags: [data-plane]
+      summary: Streamable HTTP endpoint of the router across every server type the caller is authorized for
+      description: |
+        Tools are namespaced `<adapter>__<tool>`. When lazy loading applies to the caller, the tool list
+        is `search_tools`, `describe_tool`, `execute` only.
+      parameters:
+        - $ref: "#/components/parameters/McpSessionId"
+        - $ref: "#/components/parameters/McpProtocolVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonRpcMessage" }
+      responses:
+        "200":
+          description: JSON-RPC response (application/json) or event stream (text/event-stream)
+          headers:
+            Mcp-Session-Id: { schema: { type: string } }
+        "202": { description: Notification accepted }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown or expired Mcp-Session-Id; client must re-initialize }
+        "503": { $ref: "#/components/responses/ColdStartExceeded" }
+    get:
+      tags: [data-plane]
+      summary: Open the server-to-client SSE stream for a session
+      parameters:
+        - $ref: "#/components/parameters/McpSessionId"
+      responses:
+        "200": { description: text/event-stream }
+        "405": { description: Stream not supported for this session }
+    delete:
+      tags: [data-plane]
+      summary: Terminate an MCP session (does not terminate the pod)
+      parameters:
+        - $ref: "#/components/parameters/McpSessionId"
+      responses:
+        "204": { description: Session terminated }
+
+  /adapters/{name}/mcp:
+    post:
+      tags: [data-plane]
+      summary: Streamable HTTP endpoint for one adapter (the caller's own session pod of that type)
+      description: Reference client configuration should use this endpoint per adapter when eager tool lists are acceptable, and `/mcp` otherwise.
+      parameters:
+        - $ref: "#/components/parameters/AdapterName"
+        - $ref: "#/components/parameters/McpSessionId"
+        - $ref: "#/components/parameters/McpProtocolVersion"
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/JsonRpcMessage" }
+      responses:
+        "200":
+          description: JSON-RPC response or event stream
+          headers:
+            Mcp-Session-Id: { schema: { type: string } }
+        "401": { $ref: "#/components/responses/Unauthorized" }
+        "403": { $ref: "#/components/responses/Forbidden" }
+        "404": { description: Unknown adapter or expired session }
+        "429": { description: Per-user or per-type pod cap reached }
+        "503": { $ref: "#/components/responses/ColdStartExceeded" }
+    get:
+      tags: [data-plane]
+      summary: SSE stream for one adapter session
+      parameters:
+        - $ref: "#/components/parameters/AdapterName"
+        - $ref: "#/components/parameters/McpSessionId"
+      responses:
+        "200": { description: text/event-stream }
+    delete:
+      tags: [data-plane]
+      summary: Terminate an MCP session on one adapter
+      parameters:
+        - $ref: "#/components/parameters/AdapterName"
+        - $ref: "#/components/parameters/McpSessionId"
+      responses:
+        "204": { description: Session terminated }
+
+  /adapters:
+    get:
+      tags: [adapters]
+      summary: List adapters (server types) the caller may use
+      x-juggernaut-divergence: Definitions come from juggernaut.yaml; POST is not supported in v1.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Adapter" }
+
+  /adapters/{name}:
+    get:
+      tags: [adapters]
+      summary: Get one adapter definition
+      parameters: [{ $ref: "#/components/parameters/AdapterName" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Adapter" }
+        "404": { description: Not found or not authorized }
+
+  /adapters/{name}/status:
+    get:
+      tags: [adapters]
+      summary: Aggregate pod status for an adapter
+      x-juggernaut-divergence: Reports per-phase pod counts and cold-start latency instead of replica counts.
+      parameters: [{ $ref: "#/components/parameters/AdapterName" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdapterStatus" }
+
+  /adapters/{name}/logs:
+    get:
+      tags: [adapters]
+      summary: Logs of the caller's own session pod for this adapter (admins may pass ?user=)
+      x-juggernaut-divergence: Scoped to the caller's pod; tokens are redacted.
+      parameters:
+        - $ref: "#/components/parameters/AdapterName"
+        - name: user
+          in: query
+          schema: { type: string }
+          description: subject; requires juggernaut:admin
+        - name: tailLines
+          in: query
+          schema: { type: integer, default: 500 }
+      responses:
+        "200":
+          content:
+            text/plain:
+              schema: { type: string }
+
+  /tools:
+    get:
+      tags: [tools]
+      summary: Tools visible to the caller across all authorized adapters, after exposure rules
+      x-juggernaut-divergence: Read-only; tools are discovered from servers, not registered.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/Tool" }
+
+  /tools/{name}:
+    get:
+      tags: [tools]
+      summary: One tool by namespaced name
+      parameters:
+        - name: name
+          in: path
+          required: true
+          schema: { type: string, example: jira__search_issues }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/Tool" }
+        "404": { description: Not visible }
+
+  /sessions:
+    get:
+      tags: [sessions]
+      summary: The caller's session pods and MCP sessions
+      x-juggernaut-divergence: A "session" is a session pod (user × server type) with its MCP sessions, not an agent run.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SessionPod" }
+
+  /sessions/{id}:
+    get:
+      tags: [sessions]
+      summary: One session pod
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/SessionPod" }
+    delete:
+      tags: [sessions]
+      summary: Terminate a session pod (all its MCP sessions become invalid)
+      parameters: [{ $ref: "#/components/parameters/SessionId" }]
+      responses:
+        "202": { description: Termination requested }
+
+  /users/{sub}/sessions:
+    get:
+      tags: [users]
+      summary: Session pods of a user (requires juggernaut:admin)
+      parameters: [{ $ref: "#/components/parameters/Sub" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/SessionPod" }
+    delete:
+      tags: [users]
+      summary: Terminate every session pod of a user and purge routing entries (revocation)
+      parameters: [{ $ref: "#/components/parameters/Sub" }]
+      responses:
+        "202": { description: Termination requested }
+
+  /admin/api/users:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    get:
+      tags: [admin-ui]
+      summary: List Keycloak users
+      parameters:
+        - { name: search, in: query, schema: { type: string } }
+        - { name: first, in: query, schema: { type: integer, default: 0 } }
+        - { name: max, in: query, schema: { type: integer, default: 50 } }
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AdminUser" }
+    post:
+      tags: [admin-ui]
+      summary: Create a Keycloak user
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserCreate" }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+
+  /admin/api/users/{id}:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    get:
+      tags: [admin-ui]
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUser" }
+    patch:
+      tags: [admin-ui]
+      summary: Enable/disable, change attributes
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      requestBody:
+        content:
+          application/json:
+            schema: { $ref: "#/components/schemas/AdminUserPatch" }
+      responses:
+        "200": { description: Updated }
+
+  /admin/api/users/{id}/groups:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    put:
+      tags: [admin-ui]
+      summary: Replace the user's group memberships (only groups named in authorization.groups)
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                groups: { type: array, items: { type: string } }
+      responses:
+        "200": { description: Updated }
+
+  /admin/api/users/{id}/reset-password:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    post:
+      tags: [admin-ui]
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                temporary: { type: boolean, default: true }
+                value: { type: string, description: omitted → send reset email via execute-actions-email }
+      responses:
+        "204": { description: Done }
+
+  /admin/api/users/{id}/sessions:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    get:
+      tags: [admin-ui]
+      summary: Keycloak sessions plus Juggernaut session pods for the user
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      responses:
+        "200":
+          content:
+            application/json:
+              schema: { $ref: "#/components/schemas/AdminUserSessions" }
+    delete:
+      tags: [admin-ui]
+      summary: Log the user out of Keycloak and terminate all their pods
+      parameters: [{ $ref: "#/components/parameters/UserId" }]
+      responses:
+        "202": { description: Requested }
+
+  /admin/api/groups:
+    servers: [{ url: "http://127.0.0.1:24680" }]
+    get:
+      tags: [admin-ui]
+      summary: Groups known to authorization.groups with the server types they grant
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: array
+                items: { $ref: "#/components/schemas/AdminGroup" }
+
+  /healthz:
+    get: { tags: [ops], security: [], responses: { "200": { description: ok } } }
+  /readyz:
+    get: { tags: [ops], security: [], responses: { "200": { description: ready }, "503": { description: not ready } } }
+  /metrics:
+    servers: [{ url: "http://0.0.0.0:9090" }]
+    get: { tags: [ops], security: [], responses: { "200": { description: Prometheus exposition } } }
+
+components:
+  securitySchemes:
+    bearer:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+  parameters:
+    AdapterName:
+      name: name
+      in: path
+      required: true
+      schema: { type: string, pattern: "^[a-z0-9]([-a-z0-9]{0,38}[a-z0-9])?$" }
+    McpSessionId:
+      name: Mcp-Session-Id
+      in: header
+      schema: { type: string }
+    McpProtocolVersion:
+      name: MCP-Protocol-Version
+      in: header
+      schema: { type: string, example: "2025-06-18" }
+    SessionId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+    Sub:
+      name: sub
+      in: path
+      required: true
+      schema: { type: string }
+    UserId:
+      name: id
+      in: path
+      required: true
+      schema: { type: string }
+  responses:
+    Unauthorized:
+      description: Missing or invalid bearer token
+      headers:
+        WWW-Authenticate:
+          schema:
+            type: string
+            example: Bearer resource_metadata="https://mcp.example.internal/.well-known/oauth-protected-resource", error="invalid_token"
+    Forbidden:
+      description: Token valid but caller is not granted this adapter/tool
+    ColdStartExceeded:
+      description: Session pod still starting after the cold-start budget
+      headers:
+        Retry-After: { schema: { type: integer, example: 10 } }
+      content:
+        application/json:
+          schema: { $ref: "#/components/schemas/JsonRpcError" }
+  schemas:
+    ProtectedResourceMetadata:
+      type: object
+      properties:
+        resource: { type: string, format: uri }
+        authorization_servers: { type: array, items: { type: string, format: uri } }
+        scopes_supported: { type: array, items: { type: string } }
+        bearer_methods_supported: { type: array, items: { type: string }, example: ["header"] }
+        resource_documentation: { type: string, format: uri }
+    JsonRpcMessage:
+      type: object
+      description: A JSON-RPC 2.0 request, notification, response, or batch
+    JsonRpcError:
+      type: object
+      properties:
+        jsonrpc: { type: string, const: "2.0" }
+        id: { nullable: true }
+        error:
+          type: object
+          properties:
+            code: { type: integer, example: -32000 }
+            message: { type: string, example: session pod starting }
+            data: { type: object }
+    Adapter:
+      type: object
+      required: [name, transport, tokenMode]
+      properties:
+        name: { type: string }
+        description: { type: string }
+        image: { type: string }
+        transport: { type: string, enum: [stdio, streamable-http, sse] }
+        tokenMode: { type: string, enum: [env, file, header, static, none] }
+        egress:
+          type: array
+          items:
+            type: object
+            properties:
+              host: { type: string }
+              ports: { type: array, items: { type: integer } }
+        idleTimeout: { type: string }
+        maxSessionAge: { type: string }
+        runtimeClassName: { type: string }
+        tools:
+          type: object
+          properties:
+            visible: { type: array, items: { type: string } }
+        configHash: { type: string }
+    AdapterStatus:
+      type: object
+      properties:
+        name: { type: string }
+        pods:
+          type: object
+          additionalProperties: { type: integer }
+          example: { Pending: 1, Starting: 2, Ready: 40, Idle: 3, Terminating: 1 }
+        maxPods: { type: integer }
+        coldStartSeconds:
+          type: object
+          properties: { p50: { type: number }, p95: { type: number } }
+        idleTerminationsLastHour: { type: integer }
+    Tool:
+      type: object
+      properties:
+        name: { type: string, example: jira__search_issues }
+        adapter: { type: string }
+        upstreamName: { type: string, example: jira_search }
+        description: { type: string }
+        inputSchema: { type: object }
+        annotations: { type: object }
+    SessionPod:
+      type: object
+      properties:
+        id: { type: string, example: jira-3f9a1c2b }
+        adapter: { type: string }
+        user: { type: string, description: subject }
+        phase: { type: string, enum: [Pending, Starting, Ready, Idle, Terminating, Failed, Gone] }
+        podName: { type: string }
+        createdAt: { type: string, format: date-time }
+        lastActiveAt: { type: string, format: date-time }
+        expiresAt: { type: string, format: date-time }
+        inFlight: { type: integer }
+        mcpSessions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              client: { type: string }
+              createdAt: { type: string, format: date-time }
+    AdminUser:
+      type: object
+      properties:
+        id: { type: string }
+        username: { type: string }
+        email: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        enabled: { type: boolean }
+        groups: { type: array, items: { type: string } }
+        createdAt: { type: string, format: date-time }
+    AdminUserCreate:
+      type: object
+      required: [username]
+      properties:
+        username: { type: string }
+        email: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+        groups: { type: array, items: { type: string } }
+        temporaryPassword: { type: string }
+        sendResetEmail: { type: boolean, default: true }
+    AdminUserPatch:
+      type: object
+      properties:
+        enabled: { type: boolean }
+        email: { type: string }
+        firstName: { type: string }
+        lastName: { type: string }
+    AdminUserSessions:
+      type: object
+      properties:
+        keycloakSessions:
+          type: array
+          items:
+            type: object
+            properties:
+              id: { type: string }
+              clientId: { type: string }
+              start: { type: string, format: date-time }
+              lastAccess: { type: string, format: date-time }
+              ipAddress: { type: string }
+        pods:
+          type: array
+          items: { $ref: "#/components/schemas/SessionPod" }
+    AdminGroup:
+      type: object
+      properties:
+        name: { type: string }
+        keycloakId: { type: string }
+        serverTypes: { type: array, items: { type: string } }
+        memberCount: { type: integer }

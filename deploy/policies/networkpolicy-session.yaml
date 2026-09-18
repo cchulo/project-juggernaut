@@ -1,0 +1,55 @@
+# Reference NetworkPolicy rendered per session pod by the controller (M2).
+# Vanilla NetworkPolicy is L3/L4 only: it cannot express hostnames. It is the
+# baseline that every cluster gets; FQDN enforcement is layered on top with
+# either CiliumNetworkPolicy (ciliumnetworkpolicy-session.yaml) or the egress proxy.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: session-jira-3f9a1c2b
+  namespace: juggernaut-sessions
+  labels:
+    juggernaut.io/session: "true"
+    juggernaut.io/server-type: jira
+    juggernaut.io/user-hash: 3f9a1c2b
+spec:
+  podSelector:
+    matchLabels:
+      juggernaut.io/session-id: jira-3f9a1c2b
+  policyTypes: [Ingress, Egress]
+  ingress:
+    # Only the gateway may talk to the wrapper.
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: juggernaut-system
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: juggernaut-gateway
+      ports:
+        - { protocol: TCP, port: 9000 }
+        - { protocol: TCP, port: 9001 }
+  egress:
+    # Cilium mode: DNS to kube-dns only (Cilium's DNS proxy then filters names).
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - { protocol: UDP, port: 53 }
+        - { protocol: TCP, port: 53 }
+    # Public internet on 443 only, minus link-local, metadata, RFC1918 and the API server.
+    # Hostname restriction is NOT possible here; see the Cilium policy or proxy mode.
+    - to:
+        - ipBlock:
+            cidr: 0.0.0.0/0
+            except:
+              - 169.254.0.0/16      # cloud metadata + link-local
+              - 10.0.0.0/8
+              - 172.16.0.0/12
+              - 192.168.0.0/16
+              - 100.64.0.0/10
+      ports:
+        - { protocol: TCP, port: 443 }

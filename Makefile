@@ -1,0 +1,55 @@
+SHELL := /bin/bash
+GO ?= go
+BIN ?= bin
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS := -s -w -X github.com/cchulo/project-juggernaut/internal/version.Version=$(VERSION)
+IMAGE_REGISTRY ?= ghcr.io/cchulo
+IMAGE_TAG ?= $(VERSION)
+
+BINARIES := juggernaut juggernaut-gateway juggernaut-controller juggernaut-wrapper juggernaut-egress
+
+.PHONY: all build $(BINARIES) test lint fmt vet tidy validate-example generate images helm-lint kustomize-build clean
+
+all: build
+
+build: $(BINARIES)
+
+$(BINARIES):
+	@mkdir -p $(BIN)
+	@if [ -d cmd/$@ ]; then CGO_ENABLED=0 $(GO) build -ldflags '$(LDFLAGS)' -o $(BIN)/$@ ./cmd/$@; else echo "skip $@ (not scaffolded yet)"; fi
+
+test:
+	$(GO) test ./...
+
+fmt:
+	gofmt -l -w $(shell find . -name '*.go' -not -path './vendor/*')
+
+vet:
+	$(GO) vet ./...
+
+lint:
+	@command -v golangci-lint >/dev/null && golangci-lint run ./... || echo "golangci-lint not installed; running go vet"; $(GO) vet ./...
+
+tidy:
+	$(GO) mod tidy
+
+validate-example: juggernaut
+	$(BIN)/juggernaut validate -f examples/juggernaut.yaml
+
+generate:
+	@command -v controller-gen >/dev/null || $(GO) install sigs.k8s.io/controller-tools/cmd/controller-gen@latest
+	controller-gen object crd paths=./api/... output:crd:artifacts:config=deploy/crds
+
+images:
+	@for b in $(BINARIES); do \
+	  if [ -f images/$$b/Dockerfile ]; then docker build -f images/$$b/Dockerfile -t $(IMAGE_REGISTRY)/$$b:$(IMAGE_TAG) . ; fi; \
+	done
+
+helm-lint:
+	helm lint charts/juggernaut
+
+kustomize-build:
+	kubectl kustomize deploy/kustomize/overlays/kind > /dev/null
+
+clean:
+	rm -rf $(BIN)

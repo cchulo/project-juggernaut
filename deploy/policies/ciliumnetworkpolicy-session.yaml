@@ -1,0 +1,40 @@
+# Reference CiliumNetworkPolicy rendered per session pod (M2, egressEnforcer: cilium).
+# toFQDNs gives hostname-level egress; the DNS rule makes Cilium's DNS proxy refuse
+# lookups for anything outside the allowlist, closing the DNS covert channel.
+apiVersion: cilium.io/v2
+kind: CiliumNetworkPolicy
+metadata:
+  name: session-jira-3f9a1c2b
+  namespace: juggernaut-sessions
+spec:
+  endpointSelector:
+    matchLabels:
+      juggernaut.io/session-id: jira-3f9a1c2b
+  ingress:
+    - fromEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: juggernaut-system
+            k8s:app.kubernetes.io/name: juggernaut-gateway
+      toPorts:
+        - ports:
+            - { port: "9000", protocol: TCP }
+            - { port: "9001", protocol: TCP }
+  egress:
+    - toEndpoints:
+        - matchLabels:
+            k8s:io.kubernetes.pod.namespace: kube-system
+            k8s:k8s-app: kube-dns
+      toPorts:
+        - ports:
+            - { port: "53", protocol: UDP }
+            - { port: "53", protocol: TCP }
+          rules:
+            dns:
+              - matchName: example.atlassian.net
+              - matchName: api.atlassian.com
+    - toFQDNs:
+        - matchName: example.atlassian.net
+        - matchName: api.atlassian.com
+      toPorts:
+        - ports:
+            - { port: "443", protocol: TCP }

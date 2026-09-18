@@ -1,0 +1,160 @@
+# juggernaut.yaml — the single source of truth for a Juggernaut deployment.
+# Validate with:  juggernaut validate -f juggernaut.yaml
+# Schema:         schemas/juggernaut.schema.json
+apiVersion: juggernaut.io/v1alpha1
+kind: Config
+
+identity:
+  # Any OIDC provider works for token validation. Keycloak is the reference.
+  provider: keycloak
+  issuer: https://keycloak.example.internal/realms/juggernaut
+  # Audience every data-plane token must carry (Keycloak client id / resource indicator).
+  audience: juggernaut-gateway
+  # Optional: defaults to <issuer>/.well-known/openid-configuration -> jwks_uri
+  jwksURL: https://keycloak.example.internal/realms/juggernaut/protocol/openid-connect/certs
+  groupsClaim: groups
+  # Scopes the gateway advertises in /.well-known/oauth-protected-resource
+  scopes:
+    mcp: juggernaut:mcp
+    admin: juggernaut:admin
+    usersAdmin: juggernaut:users.admin
+  introspection:
+    enabled: true
+    interval: 60s
+    clientId: juggernaut-gateway
+    clientSecretRef: { env: JUGGERNAUT_INTROSPECTION_CLIENT_SECRET }
+  # How per-user downstream tokens are minted. See docs/DESIGN.md §3.
+  broker:
+    mode: exchange            # exchange | refresh-token | none
+    clientId: juggernaut-gateway
+    clientSecretRef: { env: JUGGERNAUT_BROKER_CLIENT_SECRET }
+    cacheTTL: 5m
+  # Service-account client used ONLY by the admin UI (realm-management roles:
+  # view-users, manage-users, query-users, query-groups, view-realm).
+  keycloakAdmin:
+    realm: juggernaut
+    clientId: juggernaut-admin
+    clientSecretRef: { env: JUGGERNAUT_KEYCLOAK_ADMIN_SECRET }
+    adminRole: juggernaut-admin
+
+gateway:
+  publicURL: https://mcp.example.internal
+  listeners:
+    data:    { address: ":8080" }
+    admin:   { address: "127.0.0.1:24680" }   # never the same listener as data
+    metrics: { address: ":9090" }
+  coldStartBudget: 60s
+  idleTimeout: 15m
+  maxSessionAge: 12h
+  caps:
+    podsPerUser: 5
+    totalPods: 2000
+  tools:
+    # eager: clients see every namespaced tool; lazy: search_tools/describe_tool/execute
+    defaultLoading: eager
+    lazyForClients: ["cursor"]         # matched against initialize.clientInfo.name (case-insensitive prefix)
+    lazyForGroups: []
+  redis:
+    address: redis.juggernaut-system.svc:6379
+    passwordRef: { env: JUGGERNAUT_REDIS_PASSWORD }
+    keyPrefix: "jg:"
+  audit:
+    sink: stdout                        # stdout | file | otlp
+    redactArguments: ["password", "token", "secret", "authorization"]
+
+network:
+  sessionsNamespace: juggernaut-sessions
+  egressEnforcer: cilium                # cilium | proxy | none
+  proxy:
+    address: juggernaut-egress.juggernaut-system.svc:3128
+  podAuth: shared-secret                # shared-secret | mtls
+  imagePolicy:
+    requireDigest: true
+    cosign: { enabled: false }
+  allowInsecure: false
+
+servers:
+  # --- 1. A stdio server behind the in-house wrapper -------------------------
+  - name: jira
+    description: Atlassian Jira via mcp-atlassian (stdio)
+    image: ghcr.io/sooperset/mcp-atlassian@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    transport: stdio
+    command: ["/usr/local/bin/mcp-atlassian"]
+    args: ["--transport", "stdio"]
+    env:
+      JIRA_URL: https://example.atlassian.net
+    wrapper:
+      restart: { maxRestarts: 5, window: 10m, backoffMax: 30s }
+      startupTimeout: 20s
+      logRedaction: true
+    token:
+      mode: env                         # env | file | header | static | none
+      audience: jira-mcp                # RFC 8693 audience for the exchanged token
+      scopes: ["read:jira-work", "write:jira-work"]
+      env: JIRA_OAUTH_TOKEN             # variable the child reads
+    egress:
+      - host: example.atlassian.net
+        ports: [443]
+      - host: api.atlassian.com
+        ports: [443]
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits:   { cpu: 500m, memory: 512Mi }
+    runtimeClassName: gvisor
+    idleTimeout: 10m
+    maxSessionAge: 8h
+    maxPods: 200
+    security:
+      writableTmp: true                 # emptyDir at /tmp (image needs it)
+    tools:
+      expose:
+        mode: allow
+        names: ["jira_get_issue", "jira_search", "jira_create_issue", "jira_add_comment"]
+      prefix: "jira_"                   # tool names already carry it; namespaced as jira__<name> on /mcp
+      rename:
+        jira_search: search_issues
+      groups:
+        jira_create_issue: ["engineering", "product"]
+        jira_add_comment: ["engineering", "product", "support"]
+
+  # --- 2. A Streamable HTTP server -------------------------------------------
+  - name: github
+    description: GitHub MCP server (Streamable HTTP)
+    image: ghcr.io/github/github-mcp-server@sha256:1111111111111111111111111111111111111111111111111111111111111111
+    transport: streamable-http
+    http:
+      port: 8081
+      path: /mcp
+    command: ["/server/github-mcp-server"]
+    args: ["http", "--port", "8081"]
+    token:
+      mode: header
+      audience: github-mcp
+      header: Authorization
+      scheme: Bearer
+    egress:
+      - host: api.github.com
+        ports: [443]
+      - host: github.com
+        ports: [443]
+    resources:
+      requests: { cpu: 100m, memory: 128Mi }
+      limits:   { cpu: 1, memory: 1Gi }
+    tools:
+      expose:
+        mode: deny
+        names: ["delete_repository", "push_files"]
+
+authorization:
+  groups:
+    - name: engineering
+      serverTypes: ["jira", "github"]
+      podsPerUser: 5
+    - name: product
+      serverTypes: ["jira"]
+    - name: support
+      serverTypes: ["jira"]
+      tools: { loading: lazy }
+    - name: juggernaut-admins
+      serverTypes: ["*"]
+      admin: true

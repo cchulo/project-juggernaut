@@ -18,3 +18,25 @@ The repository is being built up in milestones. See `docs/DESIGN.md` for the ful
 
 Pre-alpha scaffold. Nothing here is production-ready yet.
 
+
+## Documents
+
+| File | What |
+|------|------|
+| `docs/DESIGN.md` | full system design (identity, lifecycle, isolation, schema, API, wrapper, admin UI, security, stack, plan, layout) |
+| `docs/DESIGN-BRIEF.md` | the brief the design answers |
+| `docs/SELF-HOSTING.md` | running it on your own laptop or cluster |
+| `examples/juggernaut.yaml` | worked configuration example |
+| `schemas/juggernaut.schema.json` | JSON Schema for `juggernaut.yaml` |
+| `api/openapi.yaml` | control-plane and data-plane API |
+| `deploy/policies/` | reference NetworkPolicy / CiliumNetworkPolicy manifests |
+
+## Milestones
+
+| Milestone | Branch | Demoable |
+|-----------|--------|----------|
+| Design | `claude/self-hosting-scaffold-rgbu56` | this document set |
+| M0 | `…-m0` | single user, token flow + stdio wrapper on Docker Compose |
+| M1 | `…-m1` | per-user pods + idle reaper on kind |
+| M2 | `…-m2` | network isolation |
+| M3 | `…-m3` | lazy tools, audit, admin UI, Helm |
