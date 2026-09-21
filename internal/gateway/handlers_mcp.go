@@ -36,9 +36,20 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Authorization first: an ungranted caller learns nothing about the
+	// adapter, not even which credentials it wants.
+	srvDecl := s.Store.Get().Config.Server(name)
+	if srvDecl == nil {
+		s.writeEnsureError(w, ErrUnknownType)
+		return
+	}
+	if !s.Policy.Grants(p, "").Allows(name) {
+		s.writeEnsureError(w, ErrNotGranted)
+		return
+	}
 	// Required user secrets are checked before a pod is spawned so a missing
 	// credential is a clear error rather than a silent failure inside the server.
-	if srvDecl := s.Store.Get().Config.Server(name); srvDecl != nil && srvDecl.UserSecrets != nil {
+	if srvDecl.UserSecrets != nil {
 		if pre, err := s.ResolveUserSecrets(ctx, r.Header, p, srvDecl); err != nil {
 			writeJSONRPCError(w, http.StatusUnprocessableEntity, -32001, err.Error())
 			return
@@ -92,18 +103,23 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 	defer func() { _, _ = s.Table.InFlight(ctx, pod.Name, -1) }()
 	_ = s.Table.Touch(ctx, pod.Name, time.Now())
 
-	// On a fresh initialize we mint our own session id and learn the upstream's from the response.
+	// On a session-less POST we mint our own session id; it reaches the client
+	// and the routing table only if the upstream actually starts a session
+	// (a legacy initialize). Stateless calls such as server/discover, which a
+	// 2026-07-28 client sends first, leave no session behind.
 	if ms == nil && r.Method == http.MethodPost {
 		ms = &contracts.McpSession{
 			ID: core.NewMcpSessionID(), Subject: p.Subject, ServerType: name, PodName: pod.Name,
 			ProtocolVersion: r.Header.Get(mcpproxy.HeaderProtocolV), CreatedAt: time.Now(),
 		}
-		w.Header().Set(mcpproxy.HeaderSessionID, ms.ID)
+		up.NewSessionID = ms.ID
 	}
 	res, err := s.proxy.Forward(ctx, w, r, up)
 	if ms != nil && res != nil && res.UpstreamSessionID != "" && ms.UpstreamSessionID == "" {
 		ms.UpstreamSessionID = res.UpstreamSessionID
 		_ = s.Table.PutSession(ctx, ms)
+	} else if ms != nil && ms.UpstreamSessionID == "" {
+		ms = nil // no session was started
 	}
 	if s.Hooks.OnRequest != nil {
 		ev := RequestEvent{Subject: p.Subject, ServerType: name, PodName: pod.Name, Method: r.Method, Duration: time.Since(start), Err: err}

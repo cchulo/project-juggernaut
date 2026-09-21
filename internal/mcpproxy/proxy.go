@@ -31,8 +31,12 @@ type Upstream struct {
 	Path              string // usually /mcp
 	PodToken          string
 	UpstreamSessionID string
-	Subject           string
-	ServerType        string
+	// NewSessionID is the gateway-issued id handed to the client if, and only
+	// if, the upstream starts a session on this request (returns its own
+	// Mcp-Session-Id). A stateless probe such as server/discover gets none.
+	NewSessionID string
+	Subject      string
+	ServerType   string
 	// UserToken is injected as `<TokenHeader>: <TokenScheme> <UserToken>` when set.
 	UserToken   string
 	TokenHeader string
@@ -157,11 +161,14 @@ func (p *Proxy) Forward(ctx context.Context, w http.ResponseWriter, r *http.Requ
 	defer resp.Body.Close()
 
 	res := &Result{Status: resp.StatusCode, UpstreamSessionID: resp.Header.Get(HeaderSessionID)}
-	copyHeaders(w.Header(), resp.Header)
 	// Never expose the upstream's session id or pod headers to the client; the
-	// caller sets the gateway-issued id.
+	// client sees the gateway-issued id, and only when a session was started.
+	copyHeaders(w.Header(), resp.Header)
 	w.Header().Del(HeaderSessionID)
 	w.Header().Del(HeaderPodToken)
+	if res.UpstreamSessionID != "" && up.NewSessionID != "" {
+		w.Header().Set(HeaderSessionID, up.NewSessionID)
+	}
 	w.WriteHeader(resp.StatusCode)
 
 	if strings.HasPrefix(resp.Header.Get("Content-Type"), "text/event-stream") {

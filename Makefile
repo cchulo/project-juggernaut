@@ -8,7 +8,7 @@ IMAGE_TAG ?= $(VERSION)
 
 BINARIES := juggernaut juggernaut-gateway juggernaut-controller juggernaut-wrapper juggernaut-egress
 
-.PHONY: all build $(BINARIES) test lint fmt vet tidy validate-example generate images ui helm-lint helm-template kustomize-build clean
+.PHONY: all build $(BINARIES) test test-unit test-integration test-race lint fmt vet tidy validate-example generate images ui helm-lint helm-template kustomize-build clean
 
 all: build
 
@@ -18,8 +18,23 @@ $(BINARIES):
 	@mkdir -p $(BIN)
 	@if [ -d cmd/$@ ]; then CGO_ENABLED=0 $(GO) build -ldflags '$(LDFLAGS)' -o $(BIN)/$@ ./cmd/$@; else echo "skip $@ (not scaffolded yet)"; fi
 
+# Unit tests plus the in-process end-to-end tests (real wrapper binary, real
+# stdio MCP server, real gateway; no docker, no cluster, no identity provider).
 test:
 	$(GO) test ./...
+
+# Only the fast, hermetic packages: everything except the end-to-end suite.
+test-unit:
+	$(GO) test $(shell $(GO) list ./... | grep -v /internal/integration)
+
+# Environment-dependent tests (docker daemon, locally built images); they
+# skip themselves when the environment is missing.
+test-integration:
+	$(GO) test -tags integration -count=1 ./internal/integration/...
+
+# The concurrency-heavy packages under the race detector.
+test-race:
+	$(GO) test -race -count=1 ./internal/wrapper/... ./internal/router/... ./internal/gateway/... ./internal/mcpproxy/... ./internal/egress/... ./internal/integration/...
 
 fmt:
 	gofmt -l -w $(shell find . -name '*.go' -not -path './vendor/*')

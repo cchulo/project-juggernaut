@@ -113,7 +113,7 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 			if grants.LazyTools {
 				rt.addMetaTools(srv, p, grants, c)
 			} else {
-				rt.addEagerTools(context.WithoutCancel(ctx), srv, p, grants, c)
+				rt.addEagerTools(context.WithoutCancel(ctx), headerOf(req.Extra), srv, p, grants, c)
 			}
 		},
 	})
@@ -121,7 +121,11 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 }
 
 // toolsFor lists the (visible, namespaced) tools of one server type, from cache when possible.
-func (rt *Router) toolsFor(ctx context.Context, p *core.Principal, grants core.Grants, st *config.Server, c *conns) ([]*mcp.Tool, map[string]string, error) {
+//
+// hdr is the HTTP header of the request that triggered the listing; when the
+// listing has to open the pod, the caller's user secrets are resolved from it
+// so the pod's child starts with the right credentials from the outset.
+func (rt *Router) toolsFor(ctx context.Context, hdr http.Header, p *core.Principal, grants core.Grants, st *config.Server, c *conns) ([]*mcp.Tool, map[string]string, error) {
 	l := rt.Store.Get()
 	sep := l.Config.Gateway.Tools.NamespaceSeparator
 	// Tool lists of servers that run with user credentials may differ per user
@@ -132,6 +136,14 @@ func (rt *Router) toolsFor(ctx context.Context, p *core.Principal, grants core.G
 	}
 	raw, ok := rt.cache.get(cacheKey, l.Hash)
 	if !ok {
+		if rt.Secrets != nil && hdr != nil {
+			extra, done, err := rt.Secrets(ctx, hdr, p, st)
+			if err != nil {
+				return nil, nil, err
+			}
+			defer done()
+			ctx = WithRequestHeaders(ctx, extra)
+		}
 		up, err := rt.upstreamFor(ctx, p, st, c)
 		if err != nil {
 			return nil, nil, err
@@ -178,14 +190,14 @@ func (rt *Router) upstreamFor(ctx context.Context, p *core.Principal, st *config
 	return u, nil
 }
 
-func (rt *Router) addEagerTools(ctx context.Context, srv *mcp.Server, p *core.Principal, grants core.Grants, c *conns) {
+func (rt *Router) addEagerTools(ctx context.Context, hdr http.Header, srv *mcp.Server, p *core.Principal, grants core.Grants, c *conns) {
 	cfg := rt.Store.Get().Config
 	for _, name := range grants.ServerTypes {
 		st := cfg.Server(name)
 		if st == nil {
 			continue
 		}
-		tools, back, err := rt.toolsFor(ctx, p, grants, st, c)
+		tools, back, err := rt.toolsFor(ctx, hdr, p, grants, st, c)
 		if err != nil {
 			rt.Log.Warn("eager tool load failed", "serverType", name, "user", p.Username, "err", err)
 			continue
@@ -301,8 +313,8 @@ type describeArgs struct {
 }
 
 type executeArgs struct {
-	Name      string          `json:"name" jsonschema:"full namespaced tool name"`
-	Arguments json.RawMessage `json:"arguments,omitempty" jsonschema:"arguments object for the tool"`
+	Name      string         `json:"name" jsonschema:"full namespaced tool name"`
+	Arguments map[string]any `json:"arguments,omitempty" jsonschema:"arguments object for the tool"`
 }
 
 func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.Grants, c *conns) {
@@ -310,7 +322,11 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 	sep := cfg.Gateway.Tools.NamespaceSeparator
 
 	// allTools enumerates the caller's visible tools across granted types (spawning pods as needed).
-	allTools := func(ctx context.Context) ([]*mcp.Tool, map[string]string, map[string]*config.Server) {
+	allTools := func(ctx context.Context, req *mcp.CallToolRequest) ([]*mcp.Tool, map[string]string, map[string]*config.Server) {
+		var hdr http.Header
+		if req != nil {
+			hdr = headerOf(req.Extra)
+		}
 		var out []*mcp.Tool
 		back := map[string]string{}
 		owner := map[string]*config.Server{}
@@ -319,7 +335,7 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 			if st == nil {
 				continue
 			}
-			tools, b, err := rt.toolsFor(ctx, p, grants, st, c)
+			tools, b, err := rt.toolsFor(ctx, hdr, p, grants, st, c)
 			if err != nil {
 				rt.Log.Warn("lazy tool enumeration failed", "serverType", name, "err", err)
 				continue
@@ -336,8 +352,8 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "search_tools",
 		Description: "Search the tools available to you across all adapters. Returns namespaced names; call describe_tool for schemas and execute to run one.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in searchArgs) (*mcp.CallToolResult, any, error) {
-		tools, _, _ := allTools(ctx)
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in searchArgs) (*mcp.CallToolResult, any, error) {
+		tools, _, _ := allTools(ctx, req)
 		q := strings.ToLower(in.Query)
 		limit := in.Limit
 		if limit <= 0 {
@@ -364,8 +380,8 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 	mcp.AddTool(srv, &mcp.Tool{
 		Name:        "describe_tool",
 		Description: "Return the full definition (description and input schema) of one tool by its namespaced name.",
-	}, func(ctx context.Context, _ *mcp.CallToolRequest, in describeArgs) (*mcp.CallToolResult, any, error) {
-		tools, _, _ := allTools(ctx)
+	}, func(ctx context.Context, req *mcp.CallToolRequest, in describeArgs) (*mcp.CallToolResult, any, error) {
+		tools, _, _ := allTools(ctx, req)
 		for _, t := range tools {
 			if t.Name == in.Name {
 				b, _ := json.MarshalIndent(t, "", "  ")
@@ -379,12 +395,25 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 		Name:        "execute",
 		Description: "Execute a tool by its namespaced name with a JSON arguments object.",
 	}, func(ctx context.Context, req *mcp.CallToolRequest, in executeArgs) (*mcp.CallToolResult, any, error) {
-		_, back, owner := allTools(ctx)
+		_, back, owner := allTools(ctx, req)
 		st, ok := owner[in.Name]
 		if !ok {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("unknown or not permitted tool %q", in.Name)}}}, nil, nil
 		}
-		res, err := rt.call(ctx, req, p, st, c, in.Name, back[in.Name], in.Arguments, true)
+		args, _ := json.Marshal(in.Arguments)
+		if in.Arguments == nil {
+			args = nil
+		}
+		res, err := rt.call(ctx, req, p, st, c, in.Name, back[in.Name], args, true)
 		return res, nil, err
 	})
+}
+
+// headerOf returns the HTTP header behind an MCP request, or nil when the
+// request did not arrive over HTTP.
+func headerOf(extra *mcp.RequestExtra) http.Header {
+	if extra == nil {
+		return nil
+	}
+	return extra.Header
 }

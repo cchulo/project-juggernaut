@@ -36,6 +36,10 @@ type Proxy struct {
 
 	allow atomic.Pointer[netpol.Allowlist]
 	mu    sync.Mutex
+	// lookup overrides name resolution (tests); nil uses Resolver.
+	lookup func(ctx context.Context, host string) ([]net.IP, error)
+	// allowLoopback permits loopback destinations (tests only).
+	allowLoopback bool
 	// Metrics counters (exported by the metrics handler).
 	Allowed, Denied atomic.Int64
 }
@@ -112,15 +116,15 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Resolve here; the pod has no resolver.
-	ips, err := p.Resolver.LookupIPAddr(r.Context(), host)
+	ips, err := p.resolve(r.Context(), host)
 	if err != nil || len(ips) == 0 {
 		http.Error(w, "resolve failed", http.StatusBadGateway)
 		return
 	}
 	var target net.IP
 	for _, ip := range ips {
-		if !p.denied(ip.IP) {
-			target = ip.IP
+		if !p.denied(ip) {
+			target = ip
 			break
 		}
 	}
@@ -153,13 +157,31 @@ func (p *Proxy) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	pipe(conn, rw, upstream)
 }
 
+func (p *Proxy) resolve(ctx context.Context, host string) ([]net.IP, error) {
+	if p.lookup != nil {
+		return p.lookup(ctx, host)
+	}
+	addrs, err := p.Resolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]net.IP, 0, len(addrs))
+	for _, a := range addrs {
+		out = append(out, a.IP)
+	}
+	return out, nil
+}
+
 func (p *Proxy) denied(ip net.IP) bool {
 	for _, n := range p.DenyCIDRs {
 		if n.Contains(ip) {
 			return true
 		}
 	}
-	return ip.IsLoopback() || ip.IsLinkLocalUnicast() || ip.IsPrivate() || ip.IsUnspecified()
+	if ip.IsLoopback() {
+		return !p.allowLoopback
+	}
+	return ip.IsLinkLocalUnicast() || ip.IsPrivate() || ip.IsUnspecified()
 }
 
 func pipe(client net.Conn, clientRW *bufio.ReadWriter, upstream net.Conn) {

@@ -17,7 +17,8 @@ kind: Config
 identity:
   type: static
   tokens:
-    alice-token: { subject: alice, groups: [engineering] }
+    alice-token: { subject: alice, groups: [engineering], scopes: [juggernaut:mcp] }
+    admin-token: { subject: root, groups: [admins] }
     ci-token: { subject: ci-bot, kind: service, groups: [engineering], scopes: [juggernaut:mcp] }
   broker: { mode: none }
 gateway:

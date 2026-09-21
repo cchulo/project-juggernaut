@@ -159,14 +159,14 @@ func (s *Server) sessionKey(w http.ResponseWriter, _ *http.Request) {
 
 // userSecretsFrom reads the gateway-forwarded secrets: plaintext items by
 // header, then a sealed blob only this pod's key can open.
-func (s *Server) userSecretsFrom(r *http.Request) (map[string]string, error) {
+func (s *Server) userSecretsFrom(h http.Header) (map[string]string, error) {
 	out := map[string]string{}
 	for _, it := range s.cfg.UserSecrets {
-		if v := r.Header.Get(s.cfg.SecretHeaderPrefix + it.Name); v != "" {
+		if v := h.Get(s.cfg.SecretHeaderPrefix + it.Name); v != "" {
 			out[it.Name] = v
 		}
 	}
-	if blob := r.Header.Get(s.cfg.SealedHeader); blob != "" {
+	if blob := h.Get(s.cfg.SealedHeader); blob != "" {
 		raw, err := base64.RawURLEncoding.DecodeString(blob)
 		if err != nil {
 			return nil, fmt.Errorf("sealed secrets: bad encoding")
@@ -255,15 +255,23 @@ func (s *Server) mcpHandler() http.Handler {
 	})
 }
 
-// serverFor builds an MCP server whose handlers forward to the child. Each HTTP
-// session gets its own *mcp.Server (cheap) but they share the single child.
+// serverFor is the SDK's getServer callback. The SDK invokes it on every
+// request (it needs the server's protocol versions before it looks the
+// session up), so it must be cheap and must never restart the child: a
+// request that already carries a session id gets a bare server, and only a
+// session-creating request (initialize) builds the mirrored server. Tool
+// handlers resolve the child per call from the call's own headers, so a
+// credential rotation restarts the child without invalidating the session.
 func (s *Server) serverFor(r *http.Request) *mcp.Server {
-	token, exp := s.userTokenFrom(r)
 	srv := mcp.NewServer(&mcp.Implementation{Name: "juggernaut/" + s.cfg.ServerName, Version: "0.1"}, &mcp.ServerOptions{
 		Logger: s.log,
 	})
+	if r.Header.Get("Mcp-Session-Id") != "" {
+		return srv
+	}
 	ctx := r.Context()
-	secrets, err := s.userSecretsFrom(r)
+	token, exp := s.userTokenFrom(r.Header)
+	secrets, err := s.userSecretsFrom(r.Header)
 	if err != nil {
 		s.log.Error("user secrets", "err", err)
 		return srv
@@ -279,45 +287,83 @@ func (s *Server) serverFor(r *http.Request) *mcp.Server {
 }
 
 // userTokenFrom extracts the per-user token the gateway injected (env/file modes).
-func (s *Server) userTokenFrom(r *http.Request) (string, time.Time) {
+func (s *Server) userTokenFrom(h http.Header) (string, time.Time) {
 	if s.cfg.Token.Mode != "env" && s.cfg.Token.Mode != "file" {
 		return "", time.Time{}
 	}
-	h := r.Header.Get("Authorization")
-	if len(h) > 7 && strings.EqualFold(h[:7], "bearer ") {
-		return strings.TrimSpace(h[7:]), time.Time{}
+	v := h.Get("Authorization")
+	if len(v) > 7 && strings.EqualFold(v[:7], "bearer ") {
+		return strings.TrimSpace(v[7:]), time.Time{}
 	}
 	return "", time.Time{}
 }
 
-// mirror registers the child's tools, resources and prompts on srv, forwarding calls.
+// acquire resolves the child session for one forwarded request from that
+// request's own headers (token and user secrets), holding it in flight until
+// release is called. A rotation observed here restarts the child before the
+// call when nothing else is in flight, or at the next idle boundary otherwise.
+func (s *Server) acquire(ctx context.Context, h http.Header) (*mcp.ClientSession, func(), error) {
+	token, exp := s.userTokenFrom(h)
+	secrets, err := s.userSecretsFrom(h)
+	if err != nil {
+		return nil, nil, err
+	}
+	defer core.ZeroMap(secrets)
+	return s.child.Acquire(context.WithoutCancel(ctx), token, exp, secrets)
+}
+
+func errResult(err error) *mcp.CallToolResult {
+	return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}
+}
+
+// mirror registers the child's tools, resources and prompts on srv. The
+// listings come from the child's cache (refreshed per child generation), and
+// every handler re-resolves the child at call time.
 func (s *Server) mirror(ctx context.Context, srv *mcp.Server, sess *mcp.ClientSession) {
-	if tools, err := sess.ListTools(ctx, &mcp.ListToolsParams{}); err == nil {
-		for _, t := range tools.Tools {
-			t := t
-			srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				s.child.Begin()
-				defer s.child.End()
-				return sess.CallTool(ctx, &mcp.CallToolParams{Name: t.Name, Arguments: req.Params.Arguments, Meta: req.Params.Meta})
-			})
-		}
-	} else {
-		s.log.Warn("tools/list failed", "err", err)
+	lists, err := s.child.Lists(ctx, sess)
+	if err != nil {
+		s.log.Warn("child listing failed", "err", err)
+		return
 	}
-	if res, err := sess.ListResources(ctx, &mcp.ListResourcesParams{}); err == nil {
-		for _, r := range res.Resources {
-			r := r
-			srv.AddResource(r, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
-				return sess.ReadResource(ctx, &mcp.ReadResourceParams{URI: req.Params.URI})
-			})
-		}
+	for _, t := range lists.Tools {
+		t := t
+		srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
+			cs, release, err := s.acquire(ctx, headerOf(req.Extra))
+			if err != nil {
+				return errResult(err), nil
+			}
+			defer release()
+			return cs.CallTool(ctx, &mcp.CallToolParams{Name: t.Name, Arguments: req.Params.Arguments, Meta: req.Params.Meta})
+		})
 	}
-	if pr, err := sess.ListPrompts(ctx, &mcp.ListPromptsParams{}); err == nil {
-		for _, p := range pr.Prompts {
-			p := p
-			srv.AddPrompt(p, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
-				return sess.GetPrompt(ctx, &mcp.GetPromptParams{Name: p.Name, Arguments: req.Params.Arguments})
-			})
-		}
+	for _, r := range lists.Resources {
+		r := r
+		srv.AddResource(r, func(ctx context.Context, req *mcp.ReadResourceRequest) (*mcp.ReadResourceResult, error) {
+			cs, release, err := s.acquire(ctx, headerOf(req.Extra))
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+			return cs.ReadResource(ctx, &mcp.ReadResourceParams{URI: req.Params.URI})
+		})
 	}
+	for _, p := range lists.Prompts {
+		p := p
+		srv.AddPrompt(p, func(ctx context.Context, req *mcp.GetPromptRequest) (*mcp.GetPromptResult, error) {
+			cs, release, err := s.acquire(ctx, headerOf(req.Extra))
+			if err != nil {
+				return nil, err
+			}
+			defer release()
+			return cs.GetPrompt(ctx, &mcp.GetPromptParams{Name: p.Name, Arguments: req.Params.Arguments})
+		})
+	}
+}
+
+// headerOf returns the HTTP headers of the request carrying an MCP call.
+func headerOf(extra *mcp.RequestExtra) http.Header {
+	if extra == nil || extra.Header == nil {
+		return http.Header{}
+	}
+	return extra.Header
 }

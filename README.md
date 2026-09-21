@@ -26,6 +26,7 @@ Pre-alpha scaffold. Nothing here is production-ready yet.
 | `docs/QUICKSTART.md` | three paths: one machine without an IdP, Compose with Keycloak, kind |
 | `docs/POWER-USERS.md` | every configuration knob, token modes, tool exposure, isolation, operations, CLI and API, troubleshooting |
 | `docs/ARCHITECTURE.md` | system diagram, contracts, wire contract of a session pod, test harness |
+| `docs/TESTING.md` | what the unit, contract and end-to-end tests cover and how to run them |
 | `docs/SECURITY.md` | zero-trust trust table, user-secret vault (only the user can decrypt), pod mTLS |
 | `docs/IDENTITY.md` | identity types (`none`, `static`, `bearer_jwt`, `bearer_introspect`), token brokering, discovery |
 | `docs/ACCESS-CONTROL.md` | groups → server types → tools; what is checked on every call; checklist before opening to a team |

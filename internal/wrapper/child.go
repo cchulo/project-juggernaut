@@ -34,6 +34,15 @@ type Child struct {
 	generation    int
 	inflight      int
 	restartAtIdle bool
+	lists         *Lists // child listings, valid for listsGen
+	listsGen      int
+}
+
+// Lists is a snapshot of what the child advertises.
+type Lists struct {
+	Tools     []*mcp.Tool
+	Resources []*mcp.Resource
+	Prompts   []*mcp.Prompt
 }
 
 // NewChild builds a child manager; the process starts lazily on first use.
@@ -50,6 +59,54 @@ var ErrRestartBudget = errors.New("child restart budget exhausted")
 func (c *Child) Session(ctx context.Context, token string, tokenExp time.Time, secrets map[string]string) (*mcp.ClientSession, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	return c.sessionLocked(ctx, token, tokenExp, secrets)
+}
+
+// Acquire is Session plus an in-flight hold: the returned session is not
+// restarted underneath the caller until release is called.
+func (c *Child) Acquire(ctx context.Context, token string, tokenExp time.Time, secrets map[string]string) (*mcp.ClientSession, func(), error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	sess, err := c.sessionLocked(ctx, token, tokenExp, secrets)
+	if err != nil {
+		return nil, nil, err
+	}
+	c.inflight++
+	return sess, c.End, nil
+}
+
+// Lists returns the child's tools, resources and prompts, cached per child
+// generation so session setup does not round-trip to the child every time.
+func (c *Child) Lists(ctx context.Context, sess *mcp.ClientSession) (*Lists, error) {
+	c.mu.Lock()
+	if c.lists != nil && c.listsGen == c.generation && c.session == sess {
+		l := c.lists
+		c.mu.Unlock()
+		return l, nil
+	}
+	gen := c.generation
+	c.mu.Unlock()
+	l := &Lists{}
+	tools, err := sess.ListTools(ctx, &mcp.ListToolsParams{})
+	if err != nil {
+		return nil, fmt.Errorf("tools/list: %w", err)
+	}
+	l.Tools = tools.Tools
+	if res, err := sess.ListResources(ctx, &mcp.ListResourcesParams{}); err == nil {
+		l.Resources = res.Resources
+	}
+	if pr, err := sess.ListPrompts(ctx, &mcp.ListPromptsParams{}); err == nil {
+		l.Prompts = pr.Prompts
+	}
+	c.mu.Lock()
+	if c.generation == gen {
+		c.lists, c.listsGen = l, gen
+	}
+	c.mu.Unlock()
+	return l, nil
+}
+
+func (c *Child) sessionLocked(ctx context.Context, token string, tokenExp time.Time, secrets map[string]string) (*mcp.ClientSession, error) {
 	fp := fingerprint(secrets)
 	if c.session != nil {
 		// Rotation: the child only read env at start. If the token or a secret
