@@ -8,7 +8,8 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/client"
 
 	jugv1 "github.com/cchulo/project-juggernaut/api/v1alpha1"
-	"github.com/cchulo/project-juggernaut/internal/session"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
 
 // Reaper terminates idle and over-age session pods.
@@ -18,7 +19,7 @@ import (
 // maxSessionAge + HardGrace regardless.
 type Reaper struct {
 	Client    client.Client
-	Table     session.Table
+	Table     contracts.RoutingTable
 	Namespace string
 	Interval  time.Duration
 	HardGrace time.Duration
@@ -123,7 +124,7 @@ func (r *Reaper) terminate(ctx context.Context, s *jugv1.Session, reason string)
 		return
 	}
 	_ = r.Table.DeleteSessionsForPod(ctx, s.Name)
-	_ = r.Table.DeletePod(ctx, session.PodKey{Subject: s.Spec.Subject, ServerType: s.Spec.ServerType})
+	_ = r.Table.DeletePod(ctx, core.PodKey{Subject: s.Spec.Subject, ServerType: s.Spec.ServerType})
 	r.Log.Info("session terminated", "session", s.Name, "reason", reason)
 	if r.OnTerminate != nil {
 		r.OnTerminate(reason)

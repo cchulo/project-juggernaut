@@ -17,10 +17,10 @@ type PodOptions struct {
 	// WrapperImage provides /juggernaut-wrapper via an init container when the
 	// server image does not bundle it.
 	WrapperImage string
-	// EgressProxy, when set, is exported as HTTPS_PROXY and DNS is disabled (proxy mode).
-	EgressProxy string
-	// ExtraEnv is appended to the wrapper container (e.g. NO_PROXY).
-	ExtraEnv []corev1.EnvVar
+	// Env is appended to the wrapper container (the egress enforcer's PodEnv, e.g. HTTPS_PROXY).
+	Env map[string]string
+	// DisableDNS gives the pod no resolver (proxy mode: the proxy resolves names).
+	DisableDNS bool
 }
 
 // BuildPod renders the session pod. Defaults satisfy Pod Security Admission
@@ -63,14 +63,9 @@ func BuildPod(sess *jugv1.Session, st *jugv1.ServerType, opts PodOptions) *corev
 	for k, v := range st.Spec.Env {
 		env = append(env, corev1.EnvVar{Name: k, Value: v})
 	}
-	if opts.EgressProxy != "" {
-		env = append(env,
-			corev1.EnvVar{Name: "HTTPS_PROXY", Value: "http://" + opts.EgressProxy},
-			corev1.EnvVar{Name: "HTTP_PROXY", Value: "http://" + opts.EgressProxy},
-			corev1.EnvVar{Name: "NO_PROXY", Value: "127.0.0.1,localhost"},
-		)
+	for k, v := range opts.Env {
+		env = append(env, corev1.EnvVar{Name: k, Value: v})
 	}
-	env = append(env, opts.ExtraEnv...)
 
 	containerSec := &corev1.SecurityContext{
 		AllowPrivilegeEscalation: ptr.To(false),
@@ -145,7 +140,7 @@ func BuildPod(sess *jugv1.Session, st *jugv1.ServerType, opts PodOptions) *corev
 	if st.Spec.RuntimeClassName != "" {
 		pod.Spec.RuntimeClassName = ptr.To(st.Spec.RuntimeClassName)
 	}
-	if opts.EgressProxy != "" {
+	if opts.DisableDNS {
 		// Proxy mode: no resolver at all. The proxy resolves allowlisted names.
 		pod.Spec.DNSPolicy = corev1.DNSNone
 		pod.Spec.DNSConfig = &corev1.PodDNSConfig{Nameservers: []string{}}

@@ -8,11 +8,11 @@ without Kubernetes. Nothing here is isolated; it is the foundation the later mil
 | Area | Package / path |
 |------|----------------|
 | Config loader, JSON Schema validation, semantic checks, hot reload | `internal/config` |
-| OAuth 2.0 protected resource: JWKS validation, PRM document, 401 challenge | `internal/auth` |
-| Principal → Grants (groups → server types, tool exposure) | `internal/authz` |
-| Token broker (RFC 8693 exchange; `none`; `refresh-token` stub) | `internal/broker` |
-| Session ids, routing table interface + in-memory implementation | `internal/session` |
-| Runtime backend interface + local (docker / process) backend | `internal/runtime`, `internal/runtime/local` |
+| OAuth 2.0 protected resource: JWKS validation, PRM document, 401 challenge | `internal/adapters/identity/bearer_jwt` |
+| Principal → Grants (groups → server types, tool exposure) | `internal/adapters/policy/groups` |
+| Token broker (RFC 8693 exchange; `none`; `refresh-token` stub) | `internal/adapters/broker/{exchange,none,refresh_token}` |
+| Session ids, routing table interface + in-memory implementation | `internal/core/contracts` (RoutingTable), `internal/adapters/routing/memory` |
+| Runtime backend interface + local (docker / process) backend | `internal/core/contracts` (Provisioner), `internal/adapters/provision/local` |
 | Streamable HTTP proxy with header rewriting and SSE passthrough | `internal/mcpproxy` |
 | Gateway HTTP surface: `/adapters/{name}/mcp`, control plane, three listeners | `internal/gateway` |
 | Stdio wrapper: child ownership, token modes, readiness, redaction, per-pod secret | `internal/wrapper` |

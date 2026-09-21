@@ -11,7 +11,7 @@ arbitrary DNS.
 | Per-session `NetworkPolicy` renderer (baseline; cilium and proxy variants) | `internal/netpol/networkpolicy.go` |
 | Per-session `CiliumNetworkPolicy` renderer (`toFQDNs` + DNS proxy rules) as unstructured, no Cilium Go dependency | `internal/netpol/cilium.go` |
 | Allowlist format for the fallback proxy | `internal/netpol/allowlist.go` |
-| Controller isolation hooks: policies before pod creation, allowlist publish on Ready, cleanup, namespace default-deny | `internal/controller/isolation.go` |
+| Controller isolation hooks: policies before pod creation, allowlist publish on Ready, cleanup, namespace default-deny | `internal/adapters/egress/{cilium,proxy,none}`, `internal/controller/apply.go` |
 | `juggernaut-egress`: CONNECT-only proxy enforcing (pod IP, host, port), resolving names itself, refusing denied CIDRs after resolution | `internal/egress`, `cmd/juggernaut-egress` |
 | Wrapper HTTP-transport mode (server bound to loopback, wrapper is the only listener) | `internal/wrapper/httpmode.go` |
 | Manifests: egress proxy deployment + its own policy, namespace default-deny, kind-cilium overlay | `deploy/kustomize`, `deploy/policies` |

@@ -479,45 +479,55 @@ Not required in core: Cilium (optional enforcer), Istio (no), Sourcebot or any F
 
 ## 13. Repository layout
 
+Code follows cerebro's contracts / adapters / registry split; `docs/ARCHITECTURE.md` explains it.
+
 ```
 .
 ├── api/
 │   ├── openapi.yaml                  # control + data plane spec
 │   └── v1alpha1/                     # Go types for internal CRDs (Session, ServerType)
-├── charts/juggernaut/                # Helm chart (gateway, controller, redis, optional keycloak)
+├── charts/juggernaut/                # Helm chart (gateway, controller, egress, redis, optional keycloak)
 ├── cmd/
-│   ├── juggernaut/                   # CLI: validate, config migrate, admin login
+│   ├── juggernaut/                   # CLI: validate, render, schema, adapters, admin login
 │   ├── juggernaut-gateway/
 │   ├── juggernaut-controller/
 │   ├── juggernaut-wrapper/
 │   └── juggernaut-egress/
 ├── deploy/
-│   ├── compose/                      # M0 laptop stack (Keycloak, Redis, gateway)
+│   ├── compose/                      # M0 laptop stack (Keycloak, gateway)
 │   ├── keycloak/realm-juggernaut.json
 │   ├── kustomize/{base,overlays}/
 │   ├── policies/                     # reference NetworkPolicy / CiliumNetworkPolicy manifests
 │   └── crds/                         # generated CRDs
 ├── docs/
-│   ├── DESIGN.md                     # this document
-│   ├── DESIGN-BRIEF.md
-│   └── SELF-HOSTING.md
 ├── examples/juggernaut.yaml
 ├── images/                           # Dockerfiles for each binary
 ├── internal/
-│   ├── admin/                        # admin listener + Keycloak admin client
-│   ├── audit/
-│   ├── auth/                         # OIDC validation, PRM, challenge
-│   ├── authz/                        # Principal → Grants
-│   ├── broker/                       # token exchange / refresh-token brokers
-│   ├── config/                       # loader, schema validation, hot reload
-│   ├── controller/                   # reconcilers, reaper
-│   ├── mcpproxy/                     # Streamable HTTP proxying, session id mapping
-│   ├── netpol/                       # NetworkPolicy / Cilium / proxy allowlist renderers
+│   ├── core/                         # Principal, Grants, ids, Sealer, Context, Secrets
+│   │   ├── contracts/                # one interface per adapter kind
+│   │   └── registry/                 # type name -> constructor, per kind
+│   ├── adapters/
+│   │   ├── all/                      # blank-imports every in-tree adapter
+│   │   ├── identity/{bearer_jwt,bearer_introspect}/
+│   │   ├── policy/groups/
+│   │   ├── broker/{exchange,none,refresh_token}/
+│   │   ├── provision/{local,kube}/
+│   │   ├── routing/{memory,redis}/
+│   │   ├── egress/{cilium,proxy,none}/
+│   │   ├── directory/keycloak/
+│   │   └── audit/{stdout,file}/
+│   ├── app/                          # composition roots: GatewayFromConfig, ControllerFromConfig
+│   ├── gateway/                      # listeners, authn, session manager, data + control plane
 │   ├── router/                       # /mcp aggregator, tool namespacing, meta-tools
-│   ├── runtime/                      # Backend interface; local/ and kube/
-│   ├── session/                      # routing table (memory + redis), ids
+│   ├── controller/                   # reconcilers, pod spec, reaper
+│   ├── admin/                        # admin listener API + embedded UI
+│   ├── audit/                        # redaction in front of an AuditSink
+│   ├── config/                       # loader, schema validation, hot reload
+│   ├── mcpproxy/                     # Streamable HTTP forwarding
+│   ├── netpol/                       # pure NetworkPolicy / Cilium / allowlist renderers
 │   ├── telemetry/
-│   └── wrapper/                      # stdio wrapper library
+│   ├── wrapper/                      # stdio wrapper library
+│   └── egress/                       # CONNECT proxy library
 ├── schemas/juggernaut.schema.json
 ├── ui/admin/                         # Preact + Vite admin UI
 ├── Makefile

@@ -4,14 +4,12 @@ import (
 	"errors"
 	"net/http"
 	"strings"
-	"time"
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
-	"github.com/cchulo/project-juggernaut/internal/authz"
 	"github.com/cchulo/project-juggernaut/internal/config"
-	"github.com/cchulo/project-juggernaut/internal/session"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
 
 // AdapterView is the API shape of a server type (microsoft/mcp-gateway "Adapter").
@@ -43,8 +41,8 @@ func adapterView(l *config.Loaded, s *config.Server) AdapterView {
 
 func (s *Server) listAdapters(w http.ResponseWriter, r *http.Request) {
 	l := s.Store.Get()
-	p := auth.PrincipalFrom(r.Context())
-	g := authz.Compute(l.Config, p, "")
+	p := core.PrincipalFrom(r.Context())
+	g := s.Policy.Grants(p, "")
 	out := []AdapterView{}
 	for i := range l.Config.Servers {
 		if g.Allows(l.Config.Servers[i].Name) {
@@ -56,10 +54,10 @@ func (s *Server) listAdapters(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) getAdapter(w http.ResponseWriter, r *http.Request) {
 	l := s.Store.Get()
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	name := chi.URLParam(r, "name")
 	srv := l.Config.Server(name)
-	if srv == nil || !authz.Compute(l.Config, p, "").Allows(name) {
+	if srv == nil || !s.Policy.Grants(p, "").Allows(name) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -79,7 +77,7 @@ func (s *Server) adapterStatus(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
-	counts := map[session.Phase]int{}
+	counts := map[contracts.Phase]int{}
 	for _, p := range pods {
 		if p.Key.ServerType == name {
 			counts[p.Phase]++
@@ -89,18 +87,17 @@ func (s *Server) adapterStatus(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) adapterLogs(w http.ResponseWriter, r *http.Request) {
-	p := auth.PrincipalFrom(r.Context())
-	l := s.Store.Get()
+	p := core.PrincipalFrom(r.Context())
 	name := chi.URLParam(r, "name")
 	subject := p.Subject
 	if u := r.URL.Query().Get("user"); u != "" && u != p.Subject {
-		if !authz.Compute(l.Config, p, "").Admin {
+		if !s.Policy.Grants(p, "").Admin {
 			http.Error(w, "admin scope required to read other users' logs", http.StatusForbidden)
 			return
 		}
 		subject = u
 	}
-	logs, err := s.Backend.Logs(r.Context(), session.PodKey{Subject: subject, ServerType: name}, queryInt(r, "tailLines", 500))
+	logs, err := s.Provisioner.Logs(r.Context(), core.PodKey{Subject: subject, ServerType: name}, queryInt(r, "tailLines", 500))
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
@@ -113,8 +110,8 @@ func (s *Server) adapterLogs(w http.ResponseWriter, r *http.Request) {
 // static exposure rules per adapter. Milestone 3 fills them from the router's cache.
 func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
 	l := s.Store.Get()
-	p := auth.PrincipalFrom(r.Context())
-	g := authz.Compute(l.Config, p, "")
+	p := core.PrincipalFrom(r.Context())
+	g := s.Policy.Grants(p, "")
 	type toolView struct {
 		Name    string `json:"name"`
 		Adapter string `json:"adapter"`
@@ -127,8 +124,8 @@ func (s *Server) listTools(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		for _, n := range srv.Tools.Expose.Names {
-			if exposed, ok := g.ToolVisible(&srv, n); ok {
-				out = append(out, toolView{Name: srv.Name + sep + exposed, Adapter: srv.Name, Rule: "allowlist"})
+			if rule := s.Policy.ToolRule(g, &srv, n); rule.Visible {
+				out = append(out, toolView{Name: srv.Name + sep + rule.Name, Adapter: srv.Name, Rule: "allowlist"})
 			}
 		}
 	}
@@ -139,37 +136,12 @@ func (s *Server) getTool(w http.ResponseWriter, r *http.Request) {
 	http.Error(w, "tool metadata is served by the router in milestone 3", http.StatusNotImplemented)
 }
 
-// SessionView is the API shape of a session pod.
-type SessionView struct {
-	ID           string    `json:"id"`
-	Adapter      string    `json:"adapter"`
-	User         string    `json:"user"`
-	Phase        string    `json:"phase"`
-	PodName      string    `json:"podName"`
-	CreatedAt    time.Time `json:"createdAt"`
-	LastActiveAt time.Time `json:"lastActiveAt,omitempty"`
-	InFlight     int       `json:"inFlight"`
-}
-
-func (s *Server) sessionViews(r *http.Request, subject string) ([]SessionView, error) {
-	pods, err := s.Table.ListPods(r.Context(), subject)
-	if err != nil {
-		return nil, err
-	}
-	out := make([]SessionView, 0, len(pods))
-	for _, p := range pods {
-		la, _ := s.Table.LastActive(r.Context(), p.Name)
-		inflight, _ := s.Table.InFlight(r.Context(), p.Name, 0)
-		out = append(out, SessionView{
-			ID: p.Name, Adapter: p.Key.ServerType, User: p.Key.Subject, Phase: string(p.Phase),
-			PodName: p.Name, CreatedAt: p.CreatedAt, LastActiveAt: la, InFlight: inflight,
-		})
-	}
-	return out, nil
+func (s *Server) sessionViews(r *http.Request, subject string) ([]contracts.SessionView, error) {
+	return s.sessions.SessionsFor(r.Context(), subject)
 }
 
 func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	views, err := s.sessionViews(r, p.Subject)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -179,7 +151,7 @@ func (s *Server) listSessions(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	id := chi.URLParam(r, "id")
 	views, err := s.sessionViews(r, p.Subject)
 	if err != nil {
@@ -196,15 +168,15 @@ func (s *Server) getSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	id := chi.URLParam(r, "id")
 	serverType, _, ok := strings.Cut(id, "-")
 	if !ok {
 		http.Error(w, "bad id", http.StatusBadRequest)
 		return
 	}
-	key := session.PodKey{Subject: p.Subject, ServerType: serverType}
-	if _, err := s.Table.GetPod(r.Context(), key); errors.Is(err, session.ErrNotFound) {
+	key := core.PodKey{Subject: p.Subject, ServerType: serverType}
+	if _, err := s.Table.GetPod(r.Context(), key); errors.Is(err, contracts.ErrNotFound) {
 		http.Error(w, "not found", http.StatusNotFound)
 		return
 	}
@@ -216,8 +188,8 @@ func (s *Server) deleteSession(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) requireAdmin(w http.ResponseWriter, r *http.Request) bool {
-	p := auth.PrincipalFrom(r.Context())
-	if !authz.Compute(s.Store.Get().Config, p, "").Admin {
+	p := core.PrincipalFrom(r.Context())
+	if !s.Policy.Grants(p, "").Admin {
 		http.Error(w, "admin required", http.StatusForbidden)
 		return false
 	}

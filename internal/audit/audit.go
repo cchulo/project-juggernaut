@@ -1,90 +1,52 @@
-// Package audit writes one structured record per tool call: who, which server
-// type and pod, which tool, redacted arguments, duration and outcome. Records
-// never contain tokens; argument values whose key matches a redaction pattern
-// are replaced before the record is written.
+// Package audit is the redaction layer between the gateway and an AuditSink:
+// every record passes through Logger.Write, which strips sensitive argument
+// values before the sink ever sees them. Sinks (stdout, file) are adapters.
 package audit
 
 import (
 	"encoding/json"
-	"io"
-	"log/slog"
-	"os"
 	"strings"
-	"sync"
 	"time"
 
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
 
-// Record is the audit event schema (stable; consumers may index it).
-type Record struct {
-	Time       time.Time       `json:"time"`
-	Kind       string          `json:"kind"` // tool_call | session_create | session_terminate | auth_failure | admin_action
-	Subject    string          `json:"subject,omitempty"`
-	ServerType string          `json:"serverType,omitempty"`
-	Pod        string          `json:"pod,omitempty"`
-	SessionID  string          `json:"sessionId,omitempty"`
-	Tool       string          `json:"tool,omitempty"`
-	Upstream   string          `json:"upstreamTool,omitempty"`
-	Arguments  json.RawMessage `json:"arguments,omitempty"`
-	DurationMS int64           `json:"durationMs,omitempty"`
-	Outcome    string          `json:"outcome"` // ok | tool_error | error
-	Error      string          `json:"error,omitempty"`
-	Lazy       bool            `json:"lazy,omitempty"`
-	Extra      map[string]any  `json:"extra,omitempty"`
-}
+// Record is the audit event schema.
+type Record = contracts.AuditRecord
 
-// Logger writes records to a sink.
+// Logger redacts and forwards to a sink.
 type Logger struct {
-	mu       sync.Mutex
-	w        io.Writer
-	closer   io.Closer
-	redact   []string
-	fallback *slog.Logger
+	sink   contracts.AuditSink
+	redact []string
 }
 
-// New opens the configured sink.
-func New(cfg config.Audit, fallback *slog.Logger) (*Logger, error) {
-	l := &Logger{fallback: fallback}
+// New wraps a sink with the configured redaction keys.
+func New(cfg config.Audit, sink contracts.AuditSink) *Logger {
+	l := &Logger{sink: sink}
 	for _, r := range cfg.RedactArguments {
 		l.redact = append(l.redact, strings.ToLower(r))
 	}
 	if len(l.redact) == 0 {
 		l.redact = []string{"password", "token", "secret", "authorization", "api_key", "apikey"}
 	}
-	switch cfg.Sink {
-	case "file":
-		f, err := os.OpenFile(cfg.File, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o600)
-		if err != nil {
-			return nil, err
-		}
-		l.w, l.closer = f, f
-	case "otlp":
-		// Emitted as OTel log records by the telemetry package; stdout as well so nothing is lost.
-		l.w = os.Stdout
-	default:
-		l.w = os.Stdout
-	}
-	return l, nil
+	return l
 }
 
-// Write emits a record.
+// Write redacts and emits a record.
 func (l *Logger) Write(r Record) {
 	if r.Time.IsZero() {
 		r.Time = time.Now().UTC()
 	}
 	r.Arguments = l.Redact(r.Arguments)
-	b, err := json.Marshal(r)
-	if err != nil {
-		l.fallback.Error("audit marshal", "err", err)
-		return
-	}
-	l.mu.Lock()
-	defer l.mu.Unlock()
-	_, _ = l.w.Write(append(b, '\n'))
+	l.sink.Write(r)
 }
 
-// Redact replaces values of sensitive keys anywhere in a JSON document.
+// Close releases the sink.
+func (l *Logger) Close() error { return l.sink.Close() }
+
+// Redact replaces values of sensitive keys anywhere in a JSON document, and
+// any string that looks like a bearer token or JWT.
 func (l *Logger) Redact(raw json.RawMessage) json.RawMessage {
 	if len(raw) == 0 {
 		return nil
@@ -137,12 +99,4 @@ func (l *Logger) sensitive(key string) bool {
 		}
 	}
 	return false
-}
-
-// Close releases the sink.
-func (l *Logger) Close() error {
-	if l.closer != nil {
-		return l.closer.Close()
-	}
-	return nil
 }

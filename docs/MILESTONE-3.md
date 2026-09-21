@@ -12,8 +12,8 @@ Keycloak, and a Helm chart that installs everything (optionally with a bundled K
 | Lazy meta-tools `search_tools`, `describe_tool`, `execute` | `internal/router/router.go` |
 | Audit log: one JSON record per tool call / adapter request / admin action, argument redaction by key and by shape (bearer strings, JWT-like strings) | `internal/audit` |
 | Prometheus metrics (`juggernaut_pods_active`, `cold_start_seconds`, `idle_terminations_total`, `auth_failures_total`, `tool_calls_total`, `tool_call_seconds`, `config_reload_errors_total`, `egress_decisions_total`) and OTLP tracing | `internal/telemetry` |
-| Revocation before expiry via RFC 7662 introspection, cached per token per interval | `internal/auth/introspect.go` |
-| Admin listener: Keycloak `Directory` (gocloak) with the exact service-account roles, `/admin/api/*`, admin-role check, disable/kill semantics, embedded SPA | `internal/admin` |
+| Revocation before expiry via RFC 7662 introspection, cached per token per interval | `internal/adapters/identity/bearer_introspect` |
+| Admin listener: Keycloak `Directory` (gocloak) with the exact service-account roles, `/admin/api/*`, admin-role check, disable/kill semantics, embedded SPA | `internal/admin`, `internal/adapters/directory/keycloak` |
 | Admin UI: Preact + Vite, PKCE in the browser, users / user detail / groups pages | `ui/admin` |
 | `juggernaut admin login` (device authorization grant) | `cmd/juggernaut` |
 | Helm chart with gateway, controller, egress proxy, Valkey, optional Keycloak, CRDs, RBAC, PSA labels | `charts/juggernaut` |

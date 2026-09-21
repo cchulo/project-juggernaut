@@ -13,8 +13,8 @@ table lives in Redis.
 | Restricted pod spec (non-root, RO rootfs, no caps, seccomp, no SA token, RuntimeClass switch) | `internal/controller/podspec.go` |
 | `Session` reconciler: Pending → Starting → Ready → Terminating → Gone, finalizer, failure detection | `internal/controller/session_controller.go` |
 | Idle reaper with in-flight protection, max session age, hard grace | `internal/controller/reaper.go` |
-| Redis routing table (sessions, pods, activity, in-flight, encrypted pod tokens) | `internal/session/redis.go`, `cipher.go` |
-| Kubernetes runtime backend (Session + Secret, no Pod rights for the gateway) | `internal/runtime/kube` |
+| Redis routing table (sessions, pods, activity, in-flight, encrypted pod tokens) | `internal/adapters/routing/redis`, `internal/core/seal.go` |
+| Kubernetes runtime backend (Session + Secret, no Pod rights for the gateway) | `internal/adapters/provision/kube` |
 | Binaries and wiring | `cmd/juggernaut-controller`, `cmd/juggernaut-gateway` (`runtime.kind: kube`) |
 | `kubectl apply -k` path with bundled Valkey and Keycloak for kind | `deploy/kustomize` |
 

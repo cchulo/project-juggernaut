@@ -13,17 +13,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
-	"github.com/cchulo/project-juggernaut/internal/authz"
-	"github.com/cchulo/project-juggernaut/internal/broker"
 	"github.com/cchulo/project-juggernaut/internal/config"
-	"github.com/cchulo/project-juggernaut/internal/session"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
-
-// PodEnsurer is implemented by gateway.Manager.
-type PodEnsurer interface {
-	EnsurePod(ctx context.Context, p *auth.Principal, serverType string) (*session.Pod, *config.Server, error)
-}
 
 // CallHook receives every tool call for audit and metrics.
 type CallHook func(ev CallEvent)
@@ -46,9 +39,10 @@ type CallEvent struct {
 // Router serves the aggregated endpoint.
 type Router struct {
 	Store  *config.Store
-	Broker broker.Broker
-	Pods   PodEnsurer
-	Table  session.Table
+	Policy contracts.AccessPolicy
+	Broker contracts.TokenBroker
+	Pods   contracts.SessionManager
+	Table  contracts.RoutingTable
 	Log    *slog.Logger
 	OnCall CallHook
 
@@ -58,8 +52,8 @@ type Router struct {
 }
 
 // New builds a router.
-func New(store *config.Store, br broker.Broker, pods PodEnsurer, table session.Table, log *slog.Logger) *Router {
-	return &Router{Store: store, Broker: br, Pods: pods, Table: table, Log: log,
+func New(store *config.Store, policy contracts.AccessPolicy, br contracts.TokenBroker, pods contracts.SessionManager, table contracts.RoutingTable, log *slog.Logger) *Router {
+	return &Router{Store: store, Policy: policy, Broker: br, Pods: pods, Table: table, Log: log,
 		cache: newToolCache(10 * time.Minute), conns: map[string]*conns{}}
 }
 
@@ -78,7 +72,7 @@ func (rt *Router) Handler() http.Handler {
 // serverFor builds the per-session server. Tools are registered once the
 // client has initialized, because lazy vs eager depends on clientInfo.name.
 func (rt *Router) serverFor(r *http.Request) *mcp.Server {
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	cfg := rt.Store.Get()
 	var srv *mcp.Server
 	srv = mcp.NewServer(&mcp.Implementation{Name: "juggernaut", Version: "0.1"}, &mcp.ServerOptions{
@@ -93,7 +87,7 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 			if ip := req.Session.InitializeParams(); ip != nil && ip.ClientInfo != nil {
 				clientName = ip.ClientInfo.Name
 			}
-			grants := authz.Compute(cfg.Config, p, clientName)
+			grants := rt.Policy.Grants(p, clientName)
 			c := newConns()
 			rt.mu.Lock()
 			rt.conns[req.Session.ID()] = c
@@ -116,7 +110,7 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 }
 
 // toolsFor lists the (visible, namespaced) tools of one server type, from cache when possible.
-func (rt *Router) toolsFor(ctx context.Context, p *auth.Principal, grants authz.Grants, st *config.Server, c *conns) ([]*mcp.Tool, map[string]string, error) {
+func (rt *Router) toolsFor(ctx context.Context, p *core.Principal, grants core.Grants, st *config.Server, c *conns) ([]*mcp.Tool, map[string]string, error) {
 	l := rt.Store.Get()
 	sep := l.Config.Gateway.Tools.NamespaceSeparator
 	raw, ok := rt.cache.get(st.Name, l.Hash)
@@ -135,12 +129,12 @@ func (rt *Router) toolsFor(ctx context.Context, p *auth.Principal, grants authz.
 	var out []*mcp.Tool
 	back := map[string]string{} // exposed name → upstream name
 	for _, t := range raw {
-		exposed, visible := grants.ToolVisible(st, t.Name)
-		if !visible {
+		rule := rt.Policy.ToolRule(grants, st, t.Name)
+		if !rule.Visible {
 			continue
 		}
 		cp := *t
-		cp.Name = st.Name + sep + exposed
+		cp.Name = st.Name + sep + rule.Name
 		if cp.Description != "" {
 			cp.Description = "[" + st.Name + "] " + cp.Description
 		}
@@ -151,7 +145,7 @@ func (rt *Router) toolsFor(ctx context.Context, p *auth.Principal, grants authz.
 }
 
 // upstreamFor returns (creating if needed) the client session to the caller's pod for st.
-func (rt *Router) upstreamFor(ctx context.Context, p *auth.Principal, st *config.Server, c *conns) (*upstream, error) {
+func (rt *Router) upstreamFor(ctx context.Context, p *core.Principal, st *config.Server, c *conns) (*upstream, error) {
 	if u := c.get(st.Name); u != nil {
 		return u, nil
 	}
@@ -167,7 +161,7 @@ func (rt *Router) upstreamFor(ctx context.Context, p *auth.Principal, st *config
 	return u, nil
 }
 
-func (rt *Router) addEagerTools(ctx context.Context, srv *mcp.Server, p *auth.Principal, grants authz.Grants, c *conns) {
+func (rt *Router) addEagerTools(ctx context.Context, srv *mcp.Server, p *core.Principal, grants core.Grants, c *conns) {
 	cfg := rt.Store.Get().Config
 	for _, name := range grants.ServerTypes {
 		st := cfg.Server(name)
@@ -190,7 +184,7 @@ func (rt *Router) addEagerTools(ctx context.Context, srv *mcp.Server, p *auth.Pr
 }
 
 // call forwards a tool call to the pod and emits the audit event.
-func (rt *Router) call(ctx context.Context, p *auth.Principal, grants authz.Grants, st *config.Server, c *conns, exposed, upstreamName string, args json.RawMessage, lazy bool, sessionID string) (*mcp.CallToolResult, error) {
+func (rt *Router) call(ctx context.Context, p *core.Principal, grants core.Grants, st *config.Server, c *conns, exposed, upstreamName string, args json.RawMessage, lazy bool, sessionID string) (*mcp.CallToolResult, error) {
 	start := time.Now()
 	up, err := rt.upstreamFor(ctx, p, st, c)
 	var res *mcp.CallToolResult
@@ -231,7 +225,7 @@ type executeArgs struct {
 	Arguments json.RawMessage `json:"arguments,omitempty" jsonschema:"arguments object for the tool"`
 }
 
-func (rt *Router) addMetaTools(srv *mcp.Server, p *auth.Principal, grants authz.Grants, c *conns) {
+func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.Grants, c *conns) {
 	cfg := rt.Store.Get().Config
 	sep := cfg.Gateway.Tools.NamespaceSeparator
 

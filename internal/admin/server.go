@@ -1,7 +1,6 @@
 package admin
 
 import (
-	"context"
 	"embed"
 	"encoding/json"
 	"io/fs"
@@ -11,25 +10,23 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
 
 //go:embed ui/dist
 var uiFS embed.FS
 
-// SessionAdmin is implemented by gateway.Manager: it lists and kills a user's pods.
-type SessionAdmin interface {
-	SessionsFor(ctx context.Context, subject string) ([]any, error)
-	ReleaseAll(ctx context.Context, subject string) error
-}
+// User is the API view of a directory user.
+type User = contracts.User
 
-// Server is the admin listener's handler.
+// Server is the admin listener's handler. It depends on contracts only.
 type Server struct {
 	Store    *config.Store
-	Verifier *auth.Verifier
-	Dir      Directory
-	Sessions SessionAdmin
+	Identity contracts.IdentityProvider
+	Dir      contracts.Directory
+	Sessions contracts.SessionManager
 	Log      *slog.Logger
 	// OnAction receives audit records of admin mutations.
 	OnAction func(actor, action, target string)
@@ -74,13 +71,13 @@ func (s *Server) Handler() http.Handler {
 func (s *Server) requireAdmin(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg := s.Store.Get().Config
-		h := r.Header.Get("Authorization")
-		if len(h) < 8 || !strings.EqualFold(h[:7], "bearer ") {
+		req := contracts.RequestInfoFrom(r)
+		if _, ok := req.Bearer(); !ok {
 			w.Header().Set("WWW-Authenticate", `Bearer realm="juggernaut-admin"`)
 			http.Error(w, "admin token required", http.StatusUnauthorized)
 			return
 		}
-		p, err := s.Verifier.Verify(r.Context(), strings.TrimSpace(h[7:]))
+		p, err := s.Identity.Resolve(r.Context(), req)
 		if err != nil {
 			http.Error(w, "invalid token", http.StatusUnauthorized)
 			return
@@ -93,7 +90,7 @@ func (s *Server) requireAdmin(next http.Handler) http.Handler {
 			http.Error(w, "admin role required", http.StatusForbidden)
 			return
 		}
-		next.ServeHTTP(w, r.WithContext(auth.WithPrincipal(r.Context(), p)))
+		next.ServeHTTP(w, r.WithContext(core.WithPrincipal(r.Context(), p)))
 	})
 }
 
@@ -107,7 +104,7 @@ func (s *Server) oidcConfig(w http.ResponseWriter, _ *http.Request) {
 }
 
 func (s *Server) me(w http.ResponseWriter, r *http.Request) {
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	writeJSON(w, http.StatusOK, map[string]any{"subject": p.Subject, "username": p.Username, "groups": p.Groups})
 }
 
@@ -246,7 +243,7 @@ func (s *Server) userSessions(w http.ResponseWriter, r *http.Request) {
 		s.fail(w, err)
 		return
 	}
-	var pods []any
+	var pods []contracts.SessionView
 	if s.Sessions != nil {
 		pods, _ = s.Sessions.SessionsFor(r.Context(), id)
 	}
@@ -280,7 +277,7 @@ func (s *Server) groups(w http.ResponseWriter, r *http.Request) {
 		Admin       bool     `json:"admin"`
 		InKeycloak  bool     `json:"inKeycloak"`
 	}
-	byName := map[string]Group{}
+	byName := map[string]contracts.Group{}
 	for _, g := range kc {
 		byName[g.Name] = g
 	}
@@ -321,13 +318,13 @@ func (s *Server) audit(r *http.Request, action, target string) {
 	if s.OnAction == nil {
 		return
 	}
-	p := auth.PrincipalFrom(r.Context())
+	p := core.PrincipalFrom(r.Context())
 	s.OnAction(p.Subject, action, target)
 }
 
 func (s *Server) fail(w http.ResponseWriter, err error) {
 	s.Log.Warn("admin api error", "err", err)
-	http.Error(w, err.Error(), HTTPStatus(err))
+	http.Error(w, err.Error(), s.Dir.StatusOf(err))
 }
 
 func writeJSON(w http.ResponseWriter, status int, v any) {

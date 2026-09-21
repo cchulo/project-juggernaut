@@ -1,10 +1,14 @@
 // Package gateway wires the HTTP surface of juggernaut-gateway: the OAuth
 // protected data plane (/mcp, /adapters/{name}/mcp), the read-mostly control
 // plane (/adapters, /tools, /sessions, /users), discovery and probes.
+//
+// It depends only on contracts; the composition root in internal/app decides
+// which adapters satisfy them.
 package gateway
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"net/http"
@@ -13,22 +17,20 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
-	"github.com/cchulo/project-juggernaut/internal/broker"
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 	"github.com/cchulo/project-juggernaut/internal/mcpproxy"
-	"github.com/cchulo/project-juggernaut/internal/runtime"
-	"github.com/cchulo/project-juggernaut/internal/session"
 )
 
-// Deps are the collaborators the gateway needs.
+// Deps are the collaborators the gateway needs, all contracts.
 type Deps struct {
-	Store    *config.Store
-	Verifier *auth.Verifier
-	Broker   broker.Broker
-	Table    session.Table
-	Backend  runtime.Backend
-	Log      *slog.Logger
+	Store       *config.Store
+	Identity    contracts.IdentityProvider
+	Policy      contracts.AccessPolicy
+	Broker      contracts.TokenBroker
+	Table       contracts.RoutingTable
+	Provisioner contracts.Provisioner
+	Log         *slog.Logger
 }
 
 // Server is the gateway HTTP server set.
@@ -36,7 +38,7 @@ type Server struct {
 	Deps
 	proxy    *mcpproxy.Proxy
 	sessions *Manager
-	// Hooks let later milestones plug in without touching the core (router, audit, metrics).
+	// Hooks let optional features plug in without touching the core (router, audit, metrics, admin).
 	Hooks Hooks
 }
 
@@ -44,20 +46,18 @@ type Server struct {
 type Hooks struct {
 	// RouterHandler serves POST/GET/DELETE /mcp (the aggregator). Nil → 501.
 	RouterHandler http.Handler
-	// OnToolCall is invoked after each forwarded request for audit/metrics.
-	OnToolCall func(ev CallEvent)
+	// OnRequest is invoked after each forwarded adapter request for audit/metrics.
+	OnRequest func(ev RequestEvent)
 	// OnAuthFailure feeds the auth-failure metric.
 	OnAuthFailure func(reason string)
 	// AdminHandler is mounted on the admin listener. Nil → 404.
 	AdminHandler http.Handler
 	// MetricsHandler is mounted at /metrics on the metrics listener.
 	MetricsHandler http.Handler
-	// Introspector enables revocation checks on the data plane.
-	Introspector *auth.Introspector
 }
 
-// CallEvent is the audit record of one forwarded request.
-type CallEvent struct {
+// RequestEvent is the audit record of one forwarded adapter request.
+type RequestEvent struct {
 	Subject    string
 	ServerType string
 	PodName    string
@@ -72,11 +72,11 @@ type CallEvent struct {
 func New(d Deps) *Server {
 	cfg := d.Store.Get().Config
 	s := &Server{Deps: d, proxy: mcpproxy.New(cfg.Gateway.MaxBodyBytes)}
-	s.sessions = NewManager(d.Store, d.Table, d.Backend, d.Broker, d.Log)
+	s.sessions = NewManager(d.Store, d.Policy, d.Table, d.Provisioner, d.Broker, d.Log)
 	return s
 }
 
-// Manager exposes the session manager for other listeners (admin).
+// Manager exposes the session manager (a contracts.SessionManager) to other components.
 func (s *Server) Manager() *Manager { return s.sessions }
 
 // Router builds the data + control plane mux.
@@ -84,17 +84,14 @@ func (s *Server) Router() http.Handler {
 	cfg := s.Store.Get().Config
 	r := chi.NewRouter()
 	r.Use(middleware.RealIP, middleware.RequestID, middleware.Recoverer)
-	r.Use(middleware.Timeout(0)) // streams may live for hours; per-route timeouts apply instead
 
 	r.Get("/healthz", func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusOK) })
 	r.Get("/readyz", s.readyz)
-	r.Method(http.MethodGet, auth.PRMPath, auth.PRMHandler(s.Store))
+	r.Get("/.well-known/oauth-protected-resource", s.prm)
 
-	mcpAuth := &auth.Middleware{Verifier: s.Verifier, Store: s.Store, Log: s.Log,
-		RequiredScope: cfg.Identity.Scopes.MCP, OnAuthFailure: s.Hooks.OnAuthFailure, Introspector: s.Hooks.Introspector}
-
+	authn := &Authn{Identity: s.Identity, Log: s.Log, RequiredScope: cfg.Identity.Scopes.MCP, OnFailure: s.Hooks.OnAuthFailure}
 	r.Group(func(r chi.Router) {
-		r.Use(mcpAuth.Wrap)
+		r.Use(authn.Wrap)
 		// Data plane.
 		r.HandleFunc("/mcp", s.routerOr501)
 		r.Post("/adapters/{name}/mcp", s.adapterMCP)
@@ -116,13 +113,23 @@ func (s *Server) Router() http.Handler {
 	return r
 }
 
+func (s *Server) prm(w http.ResponseWriter, _ *http.Request) {
+	doc := s.Identity.ProtectedResourceMetadata()
+	if doc == nil {
+		http.Error(w, "not applicable for this identity provider", http.StatusNotFound)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Cache-Control", "public, max-age=300")
+	_ = json.NewEncoder(w).Encode(doc)
+}
+
 func (s *Server) routerOr501(w http.ResponseWriter, r *http.Request) {
 	if s.Hooks.RouterHandler != nil {
 		s.Hooks.RouterHandler.ServeHTTP(w, r)
 		return
 	}
-	writeJSONRPCError(w, http.StatusNotImplemented, -32601,
-		"the aggregated /mcp router ships in milestone 3; use /adapters/{name}/mcp")
+	writeJSONRPCError(w, http.StatusNotImplemented, -32601, "the aggregated /mcp router is not enabled; use /adapters/{name}/mcp")
 }
 
 func (s *Server) readyz(w http.ResponseWriter, r *http.Request) {
@@ -178,7 +185,7 @@ func (s *Server) adminMux() http.Handler {
 		mux.Handle("/admin", s.Hooks.AdminHandler)
 	} else {
 		mux.HandleFunc("/admin/", func(w http.ResponseWriter, _ *http.Request) {
-			http.Error(w, "admin UI ships in milestone 3", http.StatusNotFound)
+			http.Error(w, "admin UI not enabled (identity.keycloakAdmin is not configured)", http.StatusNotFound)
 		})
 	}
 	return mux

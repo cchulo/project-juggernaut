@@ -13,6 +13,7 @@ import (
 	"sigs.k8s.io/controller-runtime/pkg/controller/controllerutil"
 
 	jugv1 "github.com/cchulo/project-juggernaut/api/v1alpha1"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 )
 
 // SessionReconciler turns Session objects into pods and reports their phase.
@@ -20,13 +21,9 @@ type SessionReconciler struct {
 	client.Client
 	Namespace string
 	Options   PodOptions
-	// Isolation renders network policies and allowlists; nil disables isolation (laptop only).
-	Isolation *Isolation
-}
-
-// SetControllerReference adapts the reconciler's scheme for the Isolation helper.
-func (r *SessionReconciler) SetControllerReference(owner, object metav1.Object) error {
-	return controllerutil.SetControllerReference(owner, object, r.Scheme())
+	// Egress renders the per-session isolation objects; the reconciler applies them
+	// with owner references so they are garbage collected with the Session.
+	Egress contracts.EgressEnforcer
 }
 
 // SetupWithManager registers the reconciler.
@@ -54,8 +51,8 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		if err := r.cleanup(ctx, &sess); err != nil {
 			return ctrl.Result{}, err
 		}
-		if r.Isolation != nil {
-			if err := r.Isolation.OnCleanup(ctx, &sess); err != nil {
+		if r.Egress != nil {
+			if err := r.Egress.OnCleanup(ctx, &sess); err != nil {
 				return ctrl.Result{}, err
 			}
 		}
@@ -79,10 +76,8 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 	if err := r.ensureWrapperConfigMap(ctx, &st); err != nil {
 		return ctrl.Result{}, err
 	}
-	if r.Isolation != nil {
-		if err := r.Isolation.Decorate(ctx, &sess, &st, &sess, r); err != nil {
-			return r.fail(ctx, &sess, "isolation: "+err.Error())
-		}
+	if err := r.applyIsolation(ctx, &sess, &st); err != nil {
+		return r.fail(ctx, &sess, "isolation: "+err.Error())
 	}
 
 	var pod corev1.Pod
@@ -135,8 +130,8 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			sess.Status.Endpoint = fmt.Sprintf("http://%s:%d", pod.Status.PodIP, st.Spec.WrapperPort)
 			sess.Status.ReadyAt = &now
 			sess.Status.Message = ""
-			if r.Isolation != nil {
-				if err := r.Isolation.OnReady(ctx, &sess, &st, pod.Status.PodIP); err != nil {
+			if r.Egress != nil {
+				if err := r.Egress.OnReady(ctx, &sess, &st, pod.Status.PodIP); err != nil {
 					return ctrl.Result{}, err
 				}
 			}
@@ -150,6 +145,43 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 		return ctrl.Result{RequeueAfter: time.Second}, r.Status().Update(ctx, &sess)
 	}
 	return ctrl.Result{RequeueAfter: time.Second}, nil
+}
+
+// applyIsolation validates the server type against the enforcer and creates
+// or updates every object it renders, owned by the Session.
+func (r *SessionReconciler) applyIsolation(ctx context.Context, sess *jugv1.Session, st *jugv1.ServerType) error {
+	if r.Egress == nil {
+		return nil
+	}
+	if err := r.Egress.Validate(st); err != nil {
+		return err
+	}
+	objs, err := r.Egress.Objects(sess, st)
+	if err != nil {
+		return err
+	}
+	for _, obj := range objs {
+		if err := controllerutil.SetControllerReference(sess, obj, r.Scheme()); err != nil {
+			return err
+		}
+		if err := applyObject(ctx, r.Client, obj); err != nil {
+			return fmt.Errorf("%s %s: %w", obj.GetObjectKind().GroupVersionKind().Kind, obj.GetName(), err)
+		}
+	}
+	return nil
+}
+
+// EnsureNamespaceObjects applies the enforcer's namespace-wide objects once at startup.
+func (r *SessionReconciler) EnsureNamespaceObjects(ctx context.Context) error {
+	if r.Egress == nil {
+		return nil
+	}
+	for _, obj := range r.Egress.NamespaceObjects(r.Namespace) {
+		if err := applyObject(ctx, r.Client, obj); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (r *SessionReconciler) fail(ctx context.Context, sess *jugv1.Session, msg string) (ctrl.Result, error) {

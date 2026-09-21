@@ -13,7 +13,9 @@ import (
 	"strings"
 	"time"
 
+	_ "github.com/cchulo/project-juggernaut/internal/adapters/all"
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core/registry"
 	"github.com/cchulo/project-juggernaut/internal/version"
 )
 
@@ -47,6 +49,15 @@ func main() {
 		_ = enc.Encode(l.Config)
 	case "schema":
 		_, _ = os.Stdout.Write(config.SchemaJSON())
+	case "adapters":
+		fmt.Printf("%-10s %v\n", "identity", registry.Identity.Types())
+		fmt.Printf("%-10s %v\n", "policy", registry.Policy.Types())
+		fmt.Printf("%-10s %v\n", "broker", registry.Broker.Types())
+		fmt.Printf("%-10s %v\n", "provision", registry.Provision.Types())
+		fmt.Printf("%-10s %v\n", "routing", registry.Routing.Types())
+		fmt.Printf("%-10s %v\n", "egress", registry.Egress.Types())
+		fmt.Printf("%-10s %v\n", "directory", registry.Directory.Types())
+		fmt.Printf("%-10s %v\n", "audit", registry.Audit.Types())
 	case "version":
 		fmt.Println(version.Version)
 	case "config":
@@ -161,6 +172,7 @@ func usage() {
   validate -f juggernaut.yaml   validate against the schema and semantic rules
   render   -f juggernaut.yaml   print the defaulted config as JSON
   schema                        print the JSON Schema
+  adapters                      list the adapter types compiled into this binary
   config migrate                rewrite an older config version (no-op today)
   admin login --issuer URL      obtain an admin token via the device flow (prints it)
   version`)

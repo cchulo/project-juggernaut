@@ -95,6 +95,13 @@ func indent(s string) string {
 // ApplyDefaults fills zero values with the defaults documented in the schema.
 func ApplyDefaults(c *Config) {
 	id := &c.Identity
+	if id.Type == "" {
+		if id.Introspection.Enabled {
+			id.Type = "bearer_introspect"
+		} else {
+			id.Type = "bearer_jwt"
+		}
+	}
 	if id.Provider == "" {
 		id.Provider = "generic"
 	}
@@ -183,6 +190,16 @@ func ApplyDefaults(c *Config) {
 	}
 	if g.Redis != nil && g.Redis.KeyPrefix == "" {
 		g.Redis.KeyPrefix = "jg:"
+	}
+	if g.Routing.Type == "" {
+		if g.Redis != nil {
+			g.Routing.Type = "redis"
+		} else {
+			g.Routing.Type = "memory"
+		}
+	}
+	if c.Authorization.Type == "" {
+		c.Authorization.Type = "groups"
 	}
 	if g.Audit.Sink == "" {
 		g.Audit.Sink = "stdout"
@@ -324,8 +341,11 @@ func Validate(c *Config) error {
 	if c.Gateway.ColdStartBudget.Duration > 180*time.Second {
 		add("gateway.coldStartBudget must be <= 180s")
 	}
-	if c.Gateway.Runtime.Kind == RuntimeKube && c.Gateway.Redis == nil {
-		add("gateway.redis is required when gateway.runtime.kind is kube")
+	if c.Gateway.Runtime.Kind == RuntimeKube && c.Gateway.Routing.Type == "memory" {
+		add("gateway.routing.type memory cannot be shared between gateway replicas; configure gateway.redis when gateway.runtime.kind is kube")
+	}
+	if c.Gateway.Routing.Type == "redis" && c.Gateway.Redis == nil {
+		add("gateway.redis is required when gateway.routing.type is redis")
 	}
 	if c.Network.EgressEnforcer == EgressNone && !c.Network.AllowInsecure {
 		add("network.egressEnforcer: none requires network.allowInsecure: true")

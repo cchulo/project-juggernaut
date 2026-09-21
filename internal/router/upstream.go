@@ -13,11 +13,10 @@ import (
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
-	"github.com/cchulo/project-juggernaut/internal/broker"
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 	"github.com/cchulo/project-juggernaut/internal/mcpproxy"
-	"github.com/cchulo/project-juggernaut/internal/session"
 )
 
 // podTransport adds the per-pod secret and the per-user downstream token to
@@ -25,10 +24,10 @@ import (
 // the broker per request so rotation needs no reconnect.
 type podTransport struct {
 	base   http.RoundTripper
-	pod    *session.Pod
+	pod    *contracts.Pod
 	srv    *config.Server
-	p      *auth.Principal
-	broker broker.Broker
+	p      *core.Principal
+	broker contracts.TokenBroker
 }
 
 func (t *podTransport) RoundTrip(r *http.Request) (*http.Response, error) {
@@ -60,7 +59,7 @@ func (t *podTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 // upstream is one MCP client session from the router to a session pod.
 type upstream struct {
 	serverType string
-	pod        *session.Pod
+	pod        *contracts.Pod
 	cs         *mcp.ClientSession
 }
 
@@ -94,7 +93,7 @@ func (c *conns) closeAll() {
 }
 
 // connect opens an MCP client session to the pod.
-func connect(ctx context.Context, p *auth.Principal, pod *session.Pod, srv *config.Server, br broker.Broker) (*upstream, error) {
+func connect(ctx context.Context, p *core.Principal, pod *contracts.Pod, srv *config.Server, br contracts.TokenBroker) (*upstream, error) {
 	hc := &http.Client{Transport: &podTransport{base: http.DefaultTransport, pod: pod, srv: srv, p: p, broker: br}}
 	client := mcp.NewClient(&mcp.Implementation{Name: "juggernaut-router", Version: "0.1"}, nil)
 	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: pod.Endpoint + "/mcp", HTTPClient: hc}, nil)

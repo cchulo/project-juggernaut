@@ -23,6 +23,7 @@ Pre-alpha scaffold. Nothing here is production-ready yet.
 
 | File | What |
 |------|------|
+| `docs/ARCHITECTURE.md` | code structure: core, contracts, adapters, registry, composition roots |
 | `docs/DESIGN.md` | full system design (identity, lifecycle, isolation, schema, API, wrapper, admin UI, security, stack, plan, layout) |
 | `docs/DESIGN-BRIEF.md` | the brief the design answers |
 | `docs/SELF-HOSTING.md` | running it on your own laptop or cluster |

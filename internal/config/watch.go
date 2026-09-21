@@ -31,6 +31,13 @@ func NewStore(path string, log *slog.Logger) (*Store, error) {
 	return s, nil
 }
 
+// NewStoreFrom wraps an already parsed configuration (tests, embedded use).
+func NewStoreFrom(l *Loaded, log *slog.Logger) *Store {
+	s := &Store{path: l.Path, log: log}
+	s.cur.Store(l)
+	return s
+}
+
 // Get returns the current configuration.
 func (s *Store) Get() *Loaded { return s.cur.Load() }
 

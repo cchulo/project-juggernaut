@@ -43,6 +43,10 @@ type ListenerTLS struct {
 
 // Identity is the IdP connection and token brokering configuration.
 type Identity struct {
+	// Type selects the identity adapter (bearer_jwt, bearer_introspect). Default:
+	// bearer_introspect when introspection.enabled, else bearer_jwt.
+	Type          string         `json:"type,omitempty"`
+	Options       map[string]any `json:"options,omitempty"`
 	Provider      string         `json:"provider,omitempty"`
 	Issuer        string         `json:"issuer"`
 	Audience      string         `json:"audience"`
@@ -81,12 +85,14 @@ const (
 )
 
 // Broker is the token broker configuration (RFC 8693 exchange by default).
+// Mode is the adapter type name.
 type Broker struct {
-	Mode            BrokerMode `json:"mode"`
-	TokenEndpoint   string     `json:"tokenEndpoint,omitempty"`
-	ClientID        string     `json:"clientId,omitempty"`
-	ClientSecretRef *SecretRef `json:"clientSecretRef,omitempty"`
-	CacheTTL        Duration   `json:"cacheTTL,omitempty"`
+	Mode            BrokerMode     `json:"mode"`
+	Options         map[string]any `json:"options,omitempty"`
+	TokenEndpoint   string         `json:"tokenEndpoint,omitempty"`
+	ClientID        string         `json:"clientId,omitempty"`
+	ClientSecretRef *SecretRef     `json:"clientSecretRef,omitempty"`
+	CacheTTL        Duration       `json:"cacheTTL,omitempty"`
 }
 
 // KeycloakAdmin is the service-account client the admin UI uses.
@@ -120,6 +126,7 @@ type Gateway struct {
 	MaxBodyBytes       int64     `json:"maxBodyBytes,omitempty"`
 	Caps               Caps      `json:"caps,omitempty"`
 	Tools              ToolsOpts `json:"tools,omitempty"`
+	Routing            Routing   `json:"routing,omitempty"`
 	Redis              *Redis    `json:"redis,omitempty"`
 	Audit              Audit     `json:"audit,omitempty"`
 	Telemetry          Telemetry `json:"telemetry,omitempty"`
@@ -164,6 +171,13 @@ type ToolsOpts struct {
 	NamespaceSeparator string   `json:"namespaceSeparator,omitempty"`
 }
 
+// Routing selects the routing-table adapter (memory, redis). Default: redis
+// when gateway.redis is set, else memory.
+type Routing struct {
+	Type    string         `json:"type,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
+}
+
 // Redis is the routing-table store.
 type Redis struct {
 	Address     string     `json:"address"`
@@ -173,11 +187,12 @@ type Redis struct {
 	TLS         bool       `json:"tls,omitempty"`
 }
 
-// Audit configures the tool-call audit log.
+// Audit configures the tool-call audit log. Sink is the audit adapter type.
 type Audit struct {
-	Sink            string   `json:"sink,omitempty"`
-	File            string   `json:"file,omitempty"`
-	RedactArguments []string `json:"redactArguments,omitempty"`
+	Sink            string         `json:"sink,omitempty"`
+	Options         map[string]any `json:"options,omitempty"`
+	File            string         `json:"file,omitempty"`
+	RedactArguments []string       `json:"redactArguments,omitempty"`
 }
 
 // Telemetry configures OpenTelemetry export.
@@ -348,9 +363,12 @@ type Expose struct {
 	Names []string `json:"names,omitempty"`
 }
 
-// Authorization maps IdP groups to server types.
+// Authorization maps IdP groups to server types. Type selects the policy
+// adapter (default groups).
 type Authorization struct {
-	Groups []Group `json:"groups"`
+	Type    string         `json:"type,omitempty"`
+	Options map[string]any `json:"options,omitempty"`
+	Groups  []Group        `json:"groups"`
 }
 
 // Group is one IdP group's grants.

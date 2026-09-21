@@ -108,6 +108,19 @@
         "audience"
       ],
       "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "bearer_jwt",
+            "bearer_introspect"
+          ],
+          "description": "identity adapter; default bearer_introspect when introspection.enabled, else bearer_jwt"
+        },
+        "options": {
+          "type": "object",
+          "description": "adapter-specific options",
+          "additionalProperties": true
+        },
         "provider": {
           "type": "string",
           "enum": [
@@ -209,6 +222,11 @@
             "cacheTTL": {
               "$ref": "#/$defs/Duration",
               "default": "5m"
+            },
+            "options": {
+              "type": "object",
+              "description": "adapter-specific options",
+              "additionalProperties": true
             }
           }
         },
@@ -378,6 +396,25 @@
             }
           }
         },
+        "routing": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "routing-table adapter; default redis when gateway.redis is set, else memory",
+          "properties": {
+            "type": {
+              "type": "string",
+              "enum": [
+                "memory",
+                "redis"
+              ]
+            },
+            "options": {
+              "type": "object",
+              "description": "adapter-specific options",
+              "additionalProperties": true
+            }
+          }
+        },
         "redis": {
           "type": "object",
           "additionalProperties": false,
@@ -427,6 +464,11 @@
               "items": {
                 "type": "string"
               }
+            },
+            "options": {
+              "type": "object",
+              "description": "adapter-specific options",
+              "additionalProperties": true
             }
           }
         },
@@ -958,6 +1000,19 @@
         "groups"
       ],
       "properties": {
+        "type": {
+          "type": "string",
+          "enum": [
+            "groups"
+          ],
+          "default": "groups",
+          "description": "policy adapter"
+        },
+        "options": {
+          "type": "object",
+          "description": "adapter-specific options",
+          "additionalProperties": true
+        },
         "groups": {
           "type": "array",
           "items": {

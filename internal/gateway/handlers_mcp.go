@@ -10,16 +10,16 @@ import (
 
 	"github.com/go-chi/chi/v5"
 
-	"github.com/cchulo/project-juggernaut/internal/auth"
 	"github.com/cchulo/project-juggernaut/internal/config"
+	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 	"github.com/cchulo/project-juggernaut/internal/mcpproxy"
-	"github.com/cchulo/project-juggernaut/internal/session"
 )
 
 // adapterMCP is the per-server data plane: POST/GET/DELETE /adapters/{name}/mcp.
 func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
-	p := auth.PrincipalFrom(ctx)
+	p := core.PrincipalFrom(ctx)
 	name := chi.URLParam(r, "name")
 	start := time.Now()
 
@@ -44,7 +44,7 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 
 	// Resolve the gateway session id → upstream session id.
 	clientSID := r.Header.Get(mcpproxy.HeaderSessionID)
-	var ms *session.McpSession
+	var ms *contracts.McpSession
 	if clientSID != "" {
 		ms, err = s.Table.GetSession(ctx, clientSID)
 		if err != nil || ms.Subject != p.Subject || ms.PodName != pod.Name {
@@ -77,8 +77,8 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 
 	// On a fresh initialize we mint our own session id and learn the upstream's from the response.
 	if ms == nil && r.Method == http.MethodPost {
-		ms = &session.McpSession{
-			ID: session.NewMcpSessionID(), Subject: p.Subject, ServerType: name, PodName: pod.Name,
+		ms = &contracts.McpSession{
+			ID: core.NewMcpSessionID(), Subject: p.Subject, ServerType: name, PodName: pod.Name,
 			ProtocolVersion: r.Header.Get(mcpproxy.HeaderProtocolV), CreatedAt: time.Now(),
 		}
 		w.Header().Set(mcpproxy.HeaderSessionID, ms.ID)
@@ -88,15 +88,15 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 		ms.UpstreamSessionID = res.UpstreamSessionID
 		_ = s.Table.PutSession(ctx, ms)
 	}
-	if s.Hooks.OnToolCall != nil {
-		ev := CallEvent{Subject: p.Subject, ServerType: name, PodName: pod.Name, Method: r.Method, Duration: time.Since(start), Err: err}
+	if s.Hooks.OnRequest != nil {
+		ev := RequestEvent{Subject: p.Subject, ServerType: name, PodName: pod.Name, Method: r.Method, Duration: time.Since(start), Err: err}
 		if ms != nil {
 			ev.SessionID = ms.ID
 		}
 		if res != nil {
 			ev.Status = res.Status
 		}
-		s.Hooks.OnToolCall(ev)
+		s.Hooks.OnRequest(ev)
 	}
 	if err != nil {
 		s.Log.Warn("upstream error", "pod", pod.Name, "err", err)
@@ -104,7 +104,7 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 }
 
 // injectUserToken asks the broker for the downstream token according to the server's token mode.
-func (s *Server) injectUserToken(r *http.Request, p *auth.Principal, srv *config.Server, up *mcpproxy.Upstream) error {
+func (s *Server) injectUserToken(r *http.Request, p *core.Principal, srv *config.Server, up *mcpproxy.Upstream) error {
 	switch srv.Token.Mode {
 	case config.TokenNone:
 		return nil
