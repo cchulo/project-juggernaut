@@ -39,13 +39,13 @@ links to them rather than duplicating them.
 
 | cerebro concept | Juggernaut | Why |
 |-----------------|------------|-----|
-| One MCP endpoint per developer, identity resolved at the gateway to a `Principal`, converted to `Grants`, checked on every tool call | **Kept** (`Principal` → `Grants` in `internal/authz`) | It is the right shape; it just moves from Python/FastMCP to Go. |
+| One MCP endpoint per developer, identity resolved at the gateway to a `Principal`, converted to `Grants`, checked on every tool call | **Kept** (`core.Principal` → `core.Grants` via the `AccessPolicy` contract, adapter `policy/groups`) | It is the right shape; it just moves from Python/FastMCP to Go. |
 | `scopes:` in `cerebro.yaml` mapping IdP groups → resources | **Kept as `authorization.groups[]` → server types + tool visibility** | "Scope" in cerebro is an index partition. Juggernaut has no indexes, so the word is only used for OAuth scopes to avoid confusion. |
 | `401` + `WWW-Authenticate: Bearer resource_metadata=…` challenge | **Kept**, extended to the full 2025-06-18 PRM document | Already spec-aligned. |
 | `identity.mode: trusted_headers` (`X-Forwarded-User`, SSO proxy shim) | **Dropped** | The brief requires a real OAuth 2.0 resource server. A header-trusting mode is one misrouted request away from impersonation. |
 | Long-lived shared upstream units (`mcp-confluence` via `mcp-atlassian`, code units via a stdio bridge) | **Dropped**; replaced by ephemeral per-user pods | Shared units force a shared upstream identity. |
 | `cerebro/bridge/` stdio-to-HTTP bridge inside images | **Kept in spirit** as the in-house `juggernaut-wrapper` (§8) | Same job, but with token modes, readiness and per-pod auth. |
-| Provisioner contract (`ensure()`, `release()`, `touch()`, `endpoint()`) and the kopf idle operator | **Kept as an interface** (`internal/runtime.Backend`) with `local` and `kube` implementations; the idle operator becomes the reaper (§4) | Lets milestone 0 run without Kubernetes. |
+| Provisioner contract (`ensure()`, `release()`, `touch()`, `endpoint()`) and the kopf idle operator | **Kept as a contract** (`contracts.Provisioner`) with `local` and `kube` adapters; the idle operator becomes the reaper (§4) | Lets milestone 0 run without Kubernetes. |
 | Adapter registry (`cerebro.adapters.<kind>.<type>:Adapter`) | **Dropped** | Juggernaut has three pluggable seams (IdP, token broker, egress enforcer); Go interfaces are enough. |
 | Service credentials injected by the gateway (`LIGHTRAG_API_KEY`) | **Dropped** | The whole point is per-user credentials. |
 
