@@ -3,6 +3,9 @@
 Juggernaut is built to be run by the people who use it: on a laptop, a home-lab k3s box, or a
 managed cluster you administer. Nothing in the core needs a cloud account.
 
+Start with [QUICKSTART.md](QUICKSTART.md); this page covers what a self-hosted deployment needs
+and the resource footprint. [POWER-USERS.md](POWER-USERS.md) has every configuration knob.
+
 ## What you need
 
 | Requirement | Laptop (kind / k3s / OrbStack) | Managed cluster (EKS / GKE / AKS) |
