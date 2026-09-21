@@ -59,7 +59,7 @@ links to them rather than duplicating them.
 ```mermaid
 flowchart LR
   C[MCP client<br/>Claude Code / Cursor / VS Code] -- "Bearer at, Mcp-Session-Id" --> GW
-  subgraph Gateway pod(s) - namespace juggernaut-system
+  subgraph GWP["Gateway pods - namespace juggernaut-system"]
     GW[juggernaut-gateway<br/>HTTP :8080 data+control plane]
     AUTH[authn: JWKS validate<br/>authz: groups → grants]
     BROKER[token broker<br/>RFC 8693 exchange cache]
@@ -68,7 +68,7 @@ flowchart LR
   end
   RT -- "no pod: create Session CR, hold ≤ cold-start budget" --> K8S[(Kubernetes API)]
   RT -- "pod ready: POST http://podIP:9000/mcp<br/>X-Juggernaut-Pod-Token, Authorization: exchanged token" --> POD
-  subgraph Session pod - namespace juggernaut-sessions
+  subgraph SP["Session pod - namespace juggernaut-sessions"]
     POD[juggernaut-wrapper :9000<br/>readiness :9001]
     CHILD[stdio MCP server child process<br/>or HTTP MCP server container]
     POD --> CHILD
@@ -143,7 +143,7 @@ sequenceDiagram
   C->>K: Authorization Code + PKCE, resource=https://gw/mcp
   K-->>C: access token (aud=juggernaut-gateway), refresh token
   C->>G: POST /mcp  Authorization: Bearer at  (initialize)
-  G->>G: validate: iss, aud, exp, sig via JWKS; groups claim → grants
+  G->>G: validate iss, aud, exp, sig via JWKS, then groups claim → grants
   G-->>C: initialize result, Mcp-Session-Id: jg_…
 ```
 

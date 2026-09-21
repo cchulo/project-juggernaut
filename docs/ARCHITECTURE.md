@@ -41,7 +41,7 @@ sequenceDiagram
   participant U as Upstream API
 
   C->>G: POST /adapters/jira/mcp  (Bearer at, Mcp-Session-Id?)
-  G->>G: IdentityProvider.Resolve → Principal; AccessPolicy.Grants → Grants
+  G->>G: IdentityProvider.Resolve → Principal, AccessPolicy.Grants → Grants
   G->>T: GetPod(user, jira)
   alt no pod
     G->>T: caps check, PutPod(Pending, pod token)
@@ -58,7 +58,7 @@ sequenceDiagram
   U-->>P: result
   P-->>G: result
   G-->>C: result, Mcp-Session-Id (gateway-issued)
-  G->>T: Touch, InFlight−1; audit record; metrics
+  G->>T: Touch, InFlight−1, audit record, metrics
 ```
 
 What each hop enforces:
