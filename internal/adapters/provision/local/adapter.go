@@ -196,9 +196,15 @@ func (b *Backend) startDocker(ctx context.Context, spec contracts.SpawnSpec, nam
 	if err := wcfg.WriteFile(cfgPath); err != nil {
 		return nil, err
 	}
+	// One bridge network per user so containers of different users cannot reach
+	// each other; the gateway container (if any) is attached to each on demand.
+	network, err := b.ensureUserNetwork(ctx, core.UserHash(spec.Key.Subject))
+	if err != nil {
+		return nil, err
+	}
 	args := []string{"run", "-d", "--rm",
 		"--name", "juggernaut-" + name,
-		"--network", b.cfg.Network,
+		"--network", network,
 		"--label", "juggernaut.io/session=true",
 		"--label", "juggernaut.io/server-type=" + spec.Key.ServerType,
 		"--label", "juggernaut.io/user-hash=" + core.UserHash(spec.Key.Subject),
@@ -218,7 +224,7 @@ func (b *Backend) startDocker(ctx context.Context, spec contracts.SpawnSpec, nam
 	}
 	id := strings.TrimSpace(string(out))
 	ip, err := exec.CommandContext(ctx, "docker", "inspect", "-f",
-		"{{(index .NetworkSettings.Networks \""+b.cfg.Network+"\").IPAddress}}", id).Output()
+		"{{(index .NetworkSettings.Networks \""+network+"\").IPAddress}}", id).Output()
 	if err != nil {
 		return nil, fmt.Errorf("docker inspect: %w", err)
 	}
@@ -226,6 +232,23 @@ func (b *Backend) startDocker(ctx context.Context, spec contracts.SpawnSpec, nam
 		container: id,
 		status:    contracts.PodStatus{Endpoint: "http://" + strings.TrimSpace(string(ip)) + ":9000"},
 	}, nil
+}
+
+// ensureUserNetwork creates juggernaut-<userHash> if missing and attaches the
+// gateway's own container to it when the gateway runs in docker
+// ($JUGGERNAUT_CONTAINER_NAME); on a host the bridge is reachable directly.
+func (b *Backend) ensureUserNetwork(ctx context.Context, userHash string) (string, error) {
+	name := b.cfg.Network + "-" + userHash
+	if err := exec.CommandContext(ctx, "docker", "network", "inspect", name).Run(); err != nil {
+		out, cerr := exec.CommandContext(ctx, "docker", "network", "create", "--driver", "bridge", "--label", "juggernaut.io/user-hash="+userHash, name).CombinedOutput()
+		if cerr != nil {
+			return "", fmt.Errorf("docker network create %s: %w: %s", name, cerr, strings.TrimSpace(string(out)))
+		}
+	}
+	if self := os.Getenv("JUGGERNAUT_CONTAINER_NAME"); self != "" {
+		_ = exec.CommandContext(ctx, "docker", "network", "connect", name, self).Run() // already connected is fine
+	}
+	return name, nil
 }
 
 // Status reports a pod.

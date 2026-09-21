@@ -30,8 +30,25 @@ type podTransport struct {
 	broker contracts.TokenBroker
 }
 
+// requestHeadersKey carries per-call headers (user secrets) from the tool
+// handler into the transport; they exist for that call only.
+type requestHeadersKey struct{}
+
+// WithRequestHeaders attaches headers the transport adds to the next upstream request.
+func WithRequestHeaders(ctx context.Context, h http.Header) context.Context {
+	return context.WithValue(ctx, requestHeadersKey{}, h)
+}
+
 func (t *podTransport) RoundTrip(r *http.Request) (*http.Response, error) {
 	r = r.Clone(r.Context())
+	if extra, ok := r.Context().Value(requestHeadersKey{}).(http.Header); ok {
+		for k, vv := range extra {
+			r.Header.Del(k)
+			for _, v := range vv {
+				r.Header.Add(k, v)
+			}
+		}
+	}
 	r.Header.Set(mcpproxy.HeaderPodToken, t.pod.PodToken)
 	r.Header.Set(mcpproxy.HeaderSubject, t.p.Subject)
 	r.Header.Set(mcpproxy.HeaderServerType, t.srv.Name)
@@ -93,8 +110,14 @@ func (c *conns) closeAll() {
 }
 
 // connect opens an MCP client session to the pod.
-func connect(ctx context.Context, p *core.Principal, pod *contracts.Pod, srv *config.Server, br contracts.TokenBroker) (*upstream, error) {
-	hc := &http.Client{Transport: &podTransport{base: http.DefaultTransport, pod: pod, srv: srv, p: p, broker: br}}
+func connect(ctx context.Context, p *core.Principal, pod *contracts.Pod, srv *config.Server, br contracts.TokenBroker, podTLS *mcpproxy.PodTLS) (*upstream, error) {
+	base := http.DefaultTransport
+	if podTLS != nil {
+		tr := http.DefaultTransport.(*http.Transport).Clone()
+		tr.TLSClientConfig = podTLS.ClientConfig()
+		base = tr
+	}
+	hc := &http.Client{Transport: &podTransport{base: base, pod: pod, srv: srv, p: p, broker: br}}
 	client := mcp.NewClient(&mcp.Implementation{Name: "juggernaut-router", Version: "0.1"}, nil)
 	cs, err := client.Connect(ctx, &mcp.StreamableClientTransport{Endpoint: pod.Endpoint + "/mcp", HTTPClient: hc}, nil)
 	if err != nil {

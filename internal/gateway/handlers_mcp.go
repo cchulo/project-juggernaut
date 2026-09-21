@@ -36,6 +36,16 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Required user secrets are checked before a pod is spawned so a missing
+	// credential is a clear error rather than a silent failure inside the server.
+	if srvDecl := s.Store.Get().Config.Server(name); srvDecl != nil && srvDecl.UserSecrets != nil {
+		if pre, err := s.ResolveUserSecrets(ctx, r.Header, p, srvDecl); err != nil {
+			writeJSONRPCError(w, http.StatusUnprocessableEntity, -32001, err.Error())
+			return
+		} else {
+			core.ZeroMap(pre.Plain)
+		}
+	}
 	pod, srv, err := s.sessions.EnsurePod(ctx, p, name)
 	if err != nil {
 		s.writeEnsureError(w, err)
@@ -70,6 +80,13 @@ func (s *Server) adapterMCP(w http.ResponseWriter, r *http.Request) {
 		writeJSONRPCError(w, http.StatusBadGateway, -32000, "could not obtain a downstream token: "+err.Error())
 		return
 	}
+	secrets, err := s.ResolveUserSecrets(ctx, r.Header, p, srv)
+	if err != nil {
+		writeJSONRPCError(w, http.StatusUnprocessableEntity, -32001, err.Error())
+		return
+	}
+	up.Extra = secrets.Headers(s.Store.Get().Config.Gateway.UserSecrets)
+	defer core.ZeroMap(secrets.Plain)
 
 	_, _ = s.Table.InFlight(ctx, pod.Name, +1)
 	defer func() { _, _ = s.Table.InFlight(ctx, pod.Name, -1) }()

@@ -8,10 +8,14 @@ package gateway
 
 import (
 	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
+	"os"
 	"time"
 
 	"github.com/go-chi/chi/v5"
@@ -30,7 +34,11 @@ type Deps struct {
 	Broker      contracts.TokenBroker
 	Table       contracts.RoutingTable
 	Provisioner contracts.Provisioner
+	// SecretStore holds users' sealed credentials; nil disables the store source and /me/secrets.
+	SecretStore contracts.UserSecretStore
 	Log         *slog.Logger
+	// PodTLS, when set, makes every gateway → pod connection mutual TLS.
+	PodTLS *mcpproxy.PodTLS
 }
 
 // Server is the gateway HTTP server set.
@@ -54,6 +62,8 @@ type Hooks struct {
 	AdminHandler http.Handler
 	// MetricsHandler is mounted at /metrics on the metrics listener.
 	MetricsHandler http.Handler
+	// OnAdminAction records user-initiated secret changes in the audit log.
+	OnAdminAction func(actor, action, target string)
 }
 
 // RequestEvent is the audit record of one forwarded adapter request.
@@ -71,7 +81,7 @@ type RequestEvent struct {
 // New builds the server.
 func New(d Deps) *Server {
 	cfg := d.Store.Get().Config
-	s := &Server{Deps: d, proxy: mcpproxy.New(cfg.Gateway.MaxBodyBytes)}
+	s := &Server{Deps: d, proxy: mcpproxy.New(cfg.Gateway.MaxBodyBytes, d.PodTLS)}
 	s.sessions = NewManager(d.Store, d.Policy, d.Table, d.Provisioner, d.Broker, d.Log)
 	return s
 }
@@ -109,6 +119,11 @@ func (s *Server) Router() http.Handler {
 		r.Delete("/sessions/{id}", s.deleteSession)
 		r.Get("/users/{sub}/sessions", s.userSessions)
 		r.Delete("/users/{sub}/sessions", s.deleteUserSessions)
+		// The caller's own sealed credentials (ciphertext only) and tier-B pod keys.
+		r.Get("/me/secrets", s.meSecretsList)
+		r.Put("/me/secrets/{adapter}", s.meSecretsPut)
+		r.Delete("/me/secrets/{adapter}", s.meSecretsDelete)
+		r.Get("/adapters/{name}/session-key", s.adapterSessionKey)
 	})
 	return r
 }
@@ -152,6 +167,14 @@ func (s *Server) Run(ctx context.Context) error {
 		s.Log.Info("listening", "listener", name, "addr", srv.Addr, "tls", l.TLS != nil)
 		var err error
 		if l.TLS != nil {
+			if l.TLS.ClientCAFile != "" {
+				tc, terr := clientCATLS(l.TLS.ClientCAFile)
+				if terr != nil {
+					errc <- fmt.Errorf("listener %s: %w", name, terr)
+					return
+				}
+				srv.TLSConfig = tc
+			}
 			err = srv.ListenAndServeTLS(l.TLS.CertFile, l.TLS.KeyFile)
 		} else {
 			err = srv.ListenAndServe()
@@ -175,6 +198,20 @@ func (s *Server) Run(ctx context.Context) error {
 	_ = admin.Shutdown(shutdown)
 	_ = metrics.Shutdown(shutdown)
 	return nil
+}
+
+// clientCATLS requires and verifies client certificates from the given CA
+// (mutual TLS on the admin or data listener).
+func clientCATLS(caFile string) (*tls.Config, error) {
+	pem, err := os.ReadFile(caFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(pem) {
+		return nil, errors.New("clientCAFile holds no certificates")
+	}
+	return &tls.Config{MinVersion: tls.VersionTLS13, ClientAuth: tls.RequireAndVerifyClientCert, ClientCAs: pool}, nil
 }
 
 // adminMux is a separate http.Server: the admin UI is never reachable from the data listener.

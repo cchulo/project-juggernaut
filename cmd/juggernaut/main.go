@@ -62,6 +62,16 @@ func main() {
 		fmt.Println(version.Version)
 	case "config":
 		fmt.Fprintln(os.Stderr, "config migrate: nothing to migrate for", config.APIVersion)
+	case "secrets":
+		if err := secretsCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	case "connect":
+		if err := connectCmd(os.Args[2:]); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
 	case "admin":
 		if len(os.Args) < 3 || os.Args[2] != "login" {
 			usage()
@@ -175,5 +185,7 @@ func usage() {
   adapters                      list the adapter types compiled into this binary
   config migrate                rewrite an older config version (no-op today)
   admin login --issuer URL      obtain an admin token via the device flow (prints it)
+  secrets init|set|list|delete|rotate   your sealed third-party credentials (see docs/SECURITY.md)
+  connect --gateway URL         local companion: MCP clients use http://127.0.0.1:8090/mcp with no credentials in their config
   version`)
 }

@@ -33,8 +33,13 @@ allowlist of hosts, and is reachable only from the gateway. Nothing is shared be
    one pod; another subject presenting it gets 404, and the client re-initializes.
 6. **Tool visibility**: `ToolRule` hides tools outside the allowlist, on the denylist, or reserved
    for other groups; `execute` and `describe_tool` refuse hidden names.
-7. **Pod ingress**: the wrapper accepts only requests carrying that pod's secret, and the
+7. **Pod ingress**: with `podAuth: mtls` the pod accepts only the gateway's certificate and the
+   gateway accepts only that pod's certificate; the per-pod secret is a second factor; the
    NetworkPolicy admits only gateway pods on the wrapper ports.
+8. **Per-call re-authorization**: the router re-resolves the bearer and recomputes grants on every
+   tool call; user secrets are resolved per subject and reach only that subject's pod.
+
+The full trust table is in [SECURITY.md](SECURITY.md).
 
 ## Network isolation: what a compromised pod can reach
 

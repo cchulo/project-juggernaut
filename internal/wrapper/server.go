@@ -3,6 +3,9 @@ package wrapper
 import (
 	"context"
 	"crypto/subtle"
+	"crypto/tls"
+	"crypto/x509"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log/slog"
@@ -13,6 +16,8 @@ import (
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/cchulo/project-juggernaut/internal/core"
 )
 
 // Header names shared with the gateway (mirrors internal/mcpproxy).
@@ -31,6 +36,8 @@ type Server struct {
 	podToken []byte
 
 	httpMode *httpMode
+	// podKey is the per-incarnation X25519 key clients seal secrets to (tier B).
+	podKey *core.PodKeyPair
 
 	mu    sync.RWMutex
 	tools []*mcp.Tool
@@ -49,7 +56,11 @@ func NewServer(cfg *Config, log *slog.Logger) (*Server, error) {
 	}
 	r := NewRedactor(cfg.LogRedaction)
 	r.Add(string(tok))
-	s := &Server{cfg: cfg, log: log, redactor: r, child: NewChild(cfg, log, r), podToken: tok}
+	kp, err := core.NewPodKeyPair()
+	if err != nil {
+		return nil, err
+	}
+	s := &Server{cfg: cfg, log: log, redactor: r, child: NewChild(cfg, log, r), podToken: tok, podKey: kp}
 	if cfg.Transport != "stdio" {
 		hm, err := newHTTPMode(cfg, log, r)
 		if err != nil {
@@ -62,10 +73,20 @@ func NewServer(cfg *Config, log *slog.Logger) (*Server, error) {
 
 // Run serves until ctx is done.
 func (s *Server) Run(ctx context.Context) error {
+	dataMux := http.NewServeMux()
+	dataMux.Handle("/mcp", s.mcpHandler())
+	dataMux.HandleFunc("/session-key", s.sessionKey)
 	data := &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.cfg.ListenPort),
-		Handler:           s.requirePodToken(s.mcpHandler()),
+		Handler:           s.requirePodToken(dataMux),
 		ReadHeaderTimeout: 10 * time.Second,
+	}
+	if s.cfg.TLS != nil {
+		tc, err := s.serverTLS()
+		if err != nil {
+			return err
+		}
+		data.TLSConfig = tc
 	}
 	probes := &http.Server{
 		Addr:              fmt.Sprintf(":%d", s.cfg.ReadinessPort),
@@ -73,7 +94,13 @@ func (s *Server) Run(ctx context.Context) error {
 		ReadHeaderTimeout: 5 * time.Second,
 	}
 	errc := make(chan error, 2)
-	go func() { errc <- data.ListenAndServe() }()
+	go func() {
+		if s.cfg.TLS != nil {
+			errc <- data.ListenAndServeTLS("", "")
+			return
+		}
+		errc <- data.ListenAndServe()
+	}()
 	go func() { errc <- probes.ListenAndServe() }()
 	s.setReady(true)
 	s.log.Info("wrapper listening", "data", data.Addr, "probes", probes.Addr, "server", s.cfg.ServerName, "tokenMode", s.cfg.Token.Mode)
@@ -121,6 +148,78 @@ func (s *Server) probeMux() http.Handler {
 	return mux
 }
 
+// sessionKey publishes the pod's ephemeral public key (tier-B sealing).
+func (s *Server) sessionKey(w http.ResponseWriter, _ *http.Request) {
+	w.Header().Set("Content-Type", "application/json")
+	_ = json.NewEncoder(w).Encode(map[string]string{
+		"publicKey": base64.RawURLEncoding.EncodeToString(s.podKey.Public[:]),
+		"algorithm": "x25519-nacl-box",
+	})
+}
+
+// userSecretsFrom reads the gateway-forwarded secrets: plaintext items by
+// header, then a sealed blob only this pod's key can open.
+func (s *Server) userSecretsFrom(r *http.Request) (map[string]string, error) {
+	out := map[string]string{}
+	for _, it := range s.cfg.UserSecrets {
+		if v := r.Header.Get(s.cfg.SecretHeaderPrefix + it.Name); v != "" {
+			out[it.Name] = v
+		}
+	}
+	if blob := r.Header.Get(s.cfg.SealedHeader); blob != "" {
+		raw, err := base64.RawURLEncoding.DecodeString(blob)
+		if err != nil {
+			return nil, fmt.Errorf("sealed secrets: bad encoding")
+		}
+		vals, err := s.podKey.OpenFromClient(raw)
+		if err != nil {
+			return nil, err
+		}
+		for _, it := range s.cfg.UserSecrets {
+			if v, ok := vals[it.Name]; ok {
+				out[it.Name] = v
+			}
+		}
+		core.ZeroMap(vals)
+	}
+	return out, nil
+}
+
+// serverTLS builds the mutual-TLS listener config: the pod presents its own
+// certificate and accepts only the gateway's SPIFFE identity.
+func (s *Server) serverTLS() (*tls.Config, error) {
+	cert, err := tls.LoadX509KeyPair(s.cfg.TLS.CertFile, s.cfg.TLS.KeyFile)
+	if err != nil {
+		return nil, fmt.Errorf("pod certificate: %w", err)
+	}
+	caPEM, err := os.ReadFile(s.cfg.TLS.ClientCAFile)
+	if err != nil {
+		return nil, err
+	}
+	pool := x509.NewCertPool()
+	if !pool.AppendCertsFromPEM(caPEM) {
+		return nil, fmt.Errorf("client CA: no certificates")
+	}
+	want := s.cfg.TLS.GatewayURI
+	return &tls.Config{
+		MinVersion:   tls.VersionTLS13,
+		Certificates: []tls.Certificate{cert},
+		ClientAuth:   tls.RequireAndVerifyClientCert,
+		ClientCAs:    pool,
+		VerifyPeerCertificate: func(_ [][]byte, chains [][]*x509.Certificate) error {
+			if len(chains) == 0 || len(chains[0]) == 0 {
+				return fmt.Errorf("no verified client chain")
+			}
+			for _, u := range chains[0][0].URIs {
+				if u.String() == want {
+					return nil
+				}
+			}
+			return fmt.Errorf("client certificate is not the gateway (%s)", want)
+		},
+	}, nil
+}
+
 // requirePodToken rejects anything that is not the gateway.
 func (s *Server) requirePodToken(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -164,7 +263,13 @@ func (s *Server) serverFor(r *http.Request) *mcp.Server {
 		Logger: s.log,
 	})
 	ctx := r.Context()
-	sess, err := s.child.Session(context.WithoutCancel(ctx), token, exp)
+	secrets, err := s.userSecretsFrom(r)
+	if err != nil {
+		s.log.Error("user secrets", "err", err)
+		return srv
+	}
+	defer core.ZeroMap(secrets)
+	sess, err := s.child.Session(context.WithoutCancel(ctx), token, exp, secrets)
 	if err != nil {
 		s.log.Error("child unavailable", "err", err)
 		return srv // initialize succeeds with no tools; tools/list is empty

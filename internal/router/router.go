@@ -16,7 +16,12 @@ import (
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/core"
 	"github.com/cchulo/project-juggernaut/internal/core/contracts"
+	"github.com/cchulo/project-juggernaut/internal/mcpproxy"
 )
+
+// SecretResolver returns the headers to add to a pod request for the caller's
+// user secrets, or an error naming a missing required secret.
+type SecretResolver func(ctx context.Context, hdr http.Header, p *core.Principal, srv *config.Server) (http.Header, func(), error)
 
 // CallHook receives every tool call for audit and metrics.
 type CallHook func(ev CallEvent)
@@ -38,13 +43,18 @@ type CallEvent struct {
 
 // Router serves the aggregated endpoint.
 type Router struct {
-	Store  *config.Store
-	Policy contracts.AccessPolicy
-	Broker contracts.TokenBroker
-	Pods   contracts.SessionManager
-	Table  contracts.RoutingTable
-	Log    *slog.Logger
-	OnCall CallHook
+	Store    *config.Store
+	Identity contracts.IdentityProvider
+	Policy   contracts.AccessPolicy
+	Broker   contracts.TokenBroker
+	Pods     contracts.SessionManager
+	Table    contracts.RoutingTable
+	Log      *slog.Logger
+	OnCall   CallHook
+	// Secrets resolves user secrets for a call (set by the composition root to gateway.ResolveUserSecrets).
+	Secrets SecretResolver
+	// PodTLS is set for podAuth mtls.
+	PodTLS *mcpproxy.PodTLS
 
 	cache *toolCache
 	mu    sync.Mutex
@@ -52,8 +62,8 @@ type Router struct {
 }
 
 // New builds a router.
-func New(store *config.Store, policy contracts.AccessPolicy, br contracts.TokenBroker, pods contracts.SessionManager, table contracts.RoutingTable, log *slog.Logger) *Router {
-	return &Router{Store: store, Policy: policy, Broker: br, Pods: pods, Table: table, Log: log,
+func New(store *config.Store, identity contracts.IdentityProvider, policy contracts.AccessPolicy, br contracts.TokenBroker, pods contracts.SessionManager, table contracts.RoutingTable, log *slog.Logger) *Router {
+	return &Router{Store: store, Identity: identity, Policy: policy, Broker: br, Pods: pods, Table: table, Log: log,
 		cache: newToolCache(10 * time.Minute), conns: map[string]*conns{}}
 }
 
@@ -114,7 +124,13 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 func (rt *Router) toolsFor(ctx context.Context, p *core.Principal, grants core.Grants, st *config.Server, c *conns) ([]*mcp.Tool, map[string]string, error) {
 	l := rt.Store.Get()
 	sep := l.Config.Gateway.Tools.NamespaceSeparator
-	raw, ok := rt.cache.get(st.Name, l.Hash)
+	// Tool lists of servers that run with user credentials may differ per user
+	// and must never be shown to another user: cache them per subject.
+	cacheKey := st.Name
+	if st.UserSecrets != nil || (st.Token.Mode != config.TokenNone && st.Token.Mode != config.TokenStatic) {
+		cacheKey = st.Name + "@" + core.UserHash(p.Subject)
+	}
+	raw, ok := rt.cache.get(cacheKey, l.Hash)
 	if !ok {
 		up, err := rt.upstreamFor(ctx, p, st, c)
 		if err != nil {
@@ -125,7 +141,7 @@ func (rt *Router) toolsFor(ctx context.Context, p *core.Principal, grants core.G
 			return nil, nil, err
 		}
 		raw = res.Tools
-		rt.cache.put(st.Name, l.Hash, raw)
+		rt.cache.put(cacheKey, l.Hash, raw)
 	}
 	var out []*mcp.Tool
 	back := map[string]string{} // exposed name → upstream name
@@ -154,7 +170,7 @@ func (rt *Router) upstreamFor(ctx context.Context, p *core.Principal, st *config
 	if err != nil {
 		return nil, err
 	}
-	u, err := connect(ctx, p, pod, srv, rt.Broker)
+	u, err := connect(ctx, p, pod, srv, rt.Broker, rt.PodTLS)
 	if err != nil {
 		return nil, err
 	}
@@ -178,17 +194,61 @@ func (rt *Router) addEagerTools(ctx context.Context, srv *mcp.Server, p *core.Pr
 			t := t
 			upstreamName := back[t.Name]
 			srv.AddTool(t, func(ctx context.Context, req *mcp.CallToolRequest) (*mcp.CallToolResult, error) {
-				return rt.call(ctx, p, grants, st, c, t.Name, upstreamName, req.Params.Arguments, false, req.Session.ID())
+				return rt.call(ctx, req, p, st, c, t.Name, upstreamName, req.Params.Arguments, false)
 			})
 		}
 	}
 }
 
+// authorize re-resolves identity from the current request's bearer and
+// recomputes grants, so a revoked token or a changed group takes effect on the
+// next call rather than the next session (zero trust: no session-level trust).
+func (rt *Router) authorize(ctx context.Context, req *mcp.CallToolRequest, initial *core.Principal, st *config.Server, exposed, upstreamName string) (*core.Principal, error) {
+	p := initial
+	if req != nil && req.Extra != nil && req.Extra.Header != nil {
+		fresh, err := rt.Identity.Resolve(ctx, contracts.RequestInfo{Header: req.Extra.Header, Method: "POST", Path: "/mcp"})
+		if err != nil {
+			return nil, fmt.Errorf("re-authentication failed: %w", err)
+		}
+		if fresh.Subject != initial.Subject {
+			return nil, fmt.Errorf("token subject changed within the session")
+		}
+		p = fresh
+	} else if !p.Expiry.IsZero() && time.Now().After(p.Expiry) {
+		return nil, fmt.Errorf("token expired; re-authenticate")
+	}
+	grants := rt.Policy.Grants(p, "")
+	if !grants.Allows(st.Name) {
+		return nil, fmt.Errorf("adapter %s is not granted to %s", st.Name, p.Username)
+	}
+	if rule := rt.Policy.ToolRule(grants, st, upstreamName); !rule.Visible {
+		return nil, fmt.Errorf("tool %s is not visible to %s", exposed, p.Username)
+	}
+	return p, nil
+}
+
 // call forwards a tool call to the pod and emits the audit event.
-func (rt *Router) call(ctx context.Context, p *core.Principal, grants core.Grants, st *config.Server, c *conns, exposed, upstreamName string, args json.RawMessage, lazy bool, sessionID string) (*mcp.CallToolResult, error) {
+func (rt *Router) call(ctx context.Context, req *mcp.CallToolRequest, initial *core.Principal, st *config.Server, c *conns, exposed, upstreamName string, args json.RawMessage, lazy bool) (*mcp.CallToolResult, error) {
 	start := time.Now()
-	up, err := rt.upstreamFor(ctx, p, st, c)
+	sessionID := ""
+	if req != nil && req.Session != nil {
+		sessionID = req.Session.ID()
+	}
+	p, err := rt.authorize(ctx, req, initial, st, exposed, upstreamName)
+	var up *upstream
 	var res *mcp.CallToolResult
+	if err == nil && rt.Secrets != nil && req != nil && req.Extra != nil {
+		var extra http.Header
+		var done func()
+		extra, done, err = rt.Secrets(ctx, req.Extra.Header, p, st)
+		if err == nil {
+			ctx = WithRequestHeaders(ctx, extra)
+			defer done()
+		}
+	}
+	if err == nil {
+		up, err = rt.upstreamFor(ctx, p, st, c)
+	}
 	if err == nil {
 		_, _ = rt.Table.InFlight(ctx, up.pod.Name, +1)
 		_ = rt.Table.Touch(ctx, up.pod.Name, time.Now())
@@ -206,7 +266,9 @@ func (rt *Router) call(ctx context.Context, p *core.Principal, grants core.Grant
 		}
 		rt.OnCall(ev)
 	}
-	_ = grants
+	if err != nil && res == nil {
+		return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}}}, nil
+	}
 	return res, err
 }
 
@@ -322,7 +384,7 @@ func (rt *Router) addMetaTools(srv *mcp.Server, p *core.Principal, grants core.G
 		if !ok {
 			return &mcp.CallToolResult{IsError: true, Content: []mcp.Content{&mcp.TextContent{Text: fmt.Sprintf("unknown or not permitted tool %q", in.Name)}}}, nil, nil
 		}
-		res, err := rt.call(ctx, p, grants, st, c, in.Name, back[in.Name], in.Arguments, true, req.Session.ID())
+		res, err := rt.call(ctx, req, p, st, c, in.Name, back[in.Name], in.Arguments, true)
 		return res, nil, err
 	})
 }

@@ -30,6 +30,22 @@ type Config struct {
 	Restart        config.RestartPolicy
 	StartupTimeout time.Duration `json:"startupTimeout"`
 	LogRedaction   bool          `json:"logRedaction"`
+	// UserSecrets declares which client-supplied secrets the child receives and how.
+	UserSecrets []config.UserSecretItem `json:"userSecrets,omitempty"`
+	// SecretHeaderPrefix / SealedHeader are the gateway → wrapper header names.
+	SecretHeaderPrefix string `json:"secretHeaderPrefix,omitempty"`
+	SealedHeader       string `json:"sealedHeader,omitempty"`
+	// TLS, when set, serves the data port with mutual TLS (podAuth mtls).
+	TLS *TLSFiles `json:"tls,omitempty"`
+}
+
+// TLSFiles are the mounted certificate files for mutual TLS.
+type TLSFiles struct {
+	CertFile     string `json:"certFile"`
+	KeyFile      string `json:"keyFile"`
+	ClientCAFile string `json:"clientCAFile"`
+	// GatewayURI is the SPIFFE URI the gateway's client certificate must carry.
+	GatewayURI string `json:"gatewayURI"`
 }
 
 // ConfigFromServer renders the wrapper configuration for a server type.
@@ -52,6 +68,11 @@ func ConfigFromServer(s *config.Server, listenPort, readinessPort int, podTokenF
 		c.HTTPPort = s.HTTP.Port
 		c.HTTPPath = s.HTTP.Path
 	}
+	if s.UserSecrets != nil {
+		c.UserSecrets = s.UserSecrets.Items
+	}
+	c.SecretHeaderPrefix = "X-Juggernaut-Secret-"
+	c.SealedHeader = "X-Juggernaut-Sealed-Secrets"
 	return c
 }
 

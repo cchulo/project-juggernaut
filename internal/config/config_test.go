@@ -11,8 +11,8 @@ func TestExampleValidates(t *testing.T) {
 	if err != nil {
 		t.Fatalf("example config should validate: %v", err)
 	}
-	if got := len(l.Config.Servers); got != 2 {
-		t.Fatalf("expected 2 servers, got %d", got)
+	if got := len(l.Config.Servers); got != 3 {
+		t.Fatalf("expected 3 servers, got %d", got)
 	}
 	jira := l.Config.Server("jira")
 	if jira == nil || jira.Token.Mode != TokenEnv || jira.Wrapper.Port != 9000 {

@@ -210,7 +210,8 @@ Each session pod is built to be treated as compromised without consequence for a
 | egress `cilium` | baseline NetworkPolicy (DNS + declared ports, private/link-local/metadata/API CIDRs excluded) plus `CiliumNetworkPolicy` with `toFQDNs` and DNS-proxy rules limited to the declared names |
 | egress `proxy` | NetworkPolicy to `juggernaut-egress` only; `dnsPolicy: None` with no nameservers; the proxy accepts CONNECT for (pod IP, host, port) in the allowlist the controller publishes, resolves names itself and refuses results in denied CIDRs |
 | egress `none` | laptops only (`allowInsecure`); metadata and API server still denied |
-| credentials | audience-scoped exchanged token; the pod cannot reach the IdP, the gateway, the store or other pods |
+| credentials | audience-scoped exchanged token; user-supplied secrets sealed on the user's machine ([SECURITY.md](SECURITY.md)); the pod cannot reach the IdP, the gateway, the store or other pods |
+| transport | `podAuth: mtls`: gateway and pod verify each other's controller-issued certificates by SPIFFE identity |
 
 ## 8. Observability
 

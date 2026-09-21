@@ -76,6 +76,13 @@ How the token reaches the process is the server's `token.mode`: `header` (HTTP s
 `env` (set when the stdio child starts; rotation restarts the child at the next idle boundary),
 `file` (tmpfs, rewritten per request), `static`, `none`.
 
+## User-supplied credentials
+
+Credentials the IdP knows nothing about (Jira and Confluence API tokens) are handled separately
+from token brokering: users seal them on their own machine and the gateway stores ciphertext it
+cannot read. See [SECURITY.md](SECURITY.md) and `servers[].userSecrets` in
+[POWER-USERS.md](POWER-USERS.md).
+
 ## Discovery: how an MCP client finds all this
 
 1. The client posts to `/mcp` without a token and gets `401` with

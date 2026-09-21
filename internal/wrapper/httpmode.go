@@ -49,6 +49,17 @@ func newHTTPMode(cfg *Config, log interface {
 		tok := req.Header.Get("Authorization")
 		req.Header.Del(HeaderPodToken)
 		req.Header.Del(HeaderSubject)
+		// User secrets: deliver declared items as the header the server wants; strip everything else.
+		for _, it := range cfg.UserSecrets {
+			if v := req.Header.Get(cfg.SecretHeaderPrefix + it.Name); v != "" && it.Header != "" {
+				req.Header.Set(it.Header, v)
+			}
+		}
+		for k := range req.Header {
+			if strings.HasPrefix(strings.ToLower(k), "x-juggernaut-") {
+				req.Header.Del(k)
+			}
+		}
 		if cfg.Token.Mode == "header" && tok != "" {
 			h := cfg.Token.Header
 			if h == "" {

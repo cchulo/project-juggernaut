@@ -88,6 +88,7 @@ var (
 	Egress    = New[contracts.EgressEnforcer]("egress")
 	Directory = New[contracts.Directory]("directory")
 	Audit     = New[contracts.AuditSink]("audit")
+	Secrets   = New[contracts.UserSecretStore]("secrets")
 )
 
 // WithOptions returns a copy of ctx carrying the adapter's own options map.

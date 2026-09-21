@@ -19,6 +19,7 @@ network:
   # kind without Cilium: hostname allowlists are enforced by juggernaut-egress.
   egressEnforcer: proxy
   proxy: { address: juggernaut-egress.juggernaut-system.svc:3128 }
+  podAuth: mtls
   imagePolicy: { requireDigest: false }
 servers:
   - name: everything

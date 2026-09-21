@@ -3,9 +3,14 @@ package core
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/hmac"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"errors"
+	"io"
+
+	"golang.org/x/crypto/hkdf"
 )
 
 // Sealer encrypts small secrets (pod tokens) for storage outside the process.
@@ -57,4 +62,32 @@ func (a *AESGCM) Open(ciphertext string) (string, error) {
 		return "", err
 	}
 	return string(pt), nil
+}
+
+// DeriveMACKey derives a purpose-specific key from the KEK with HKDF-SHA256.
+func DeriveMACKey(kek []byte, purpose string) []byte {
+	r := hkdf.New(sha256.New, kek, nil, []byte("juggernaut/"+purpose))
+	out := make([]byte, 32)
+	if _, err := io.ReadFull(r, out); err != nil {
+		panic(err)
+	}
+	return out
+}
+
+// MAC authenticates the concatenation of parts under key.
+func MAC(key []byte, parts ...string) []byte {
+	h := hmac.New(sha256.New, key)
+	for _, p := range parts {
+		h.Write([]byte(p))
+		h.Write([]byte{0})
+	}
+	return h.Sum(nil)
+}
+
+// MACEqual compares in constant time; two nils are equal (MAC disabled).
+func MACEqual(a, b []byte) bool {
+	if a == nil && b == nil {
+		return true
+	}
+	return hmac.Equal(a, b)
 }

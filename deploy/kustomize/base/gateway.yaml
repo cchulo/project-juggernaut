@@ -38,12 +38,15 @@ spec:
             readOnlyRootFilesystem: true
           volumeMounts:
             - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+            - { name: pod-tls, mountPath: /etc/juggernaut/tls, readOnly: true }   # podAuth mtls (optional secret)
           resources:
             requests: { cpu: 20m, memory: 64Mi }
             limits: { cpu: "1", memory: 512Mi }
       volumes:
         - name: config
           configMap: { name: juggernaut-config }
+        - name: pod-tls
+          secret: { secretName: juggernaut-gateway-client-tls, optional: true }
 ---
 apiVersion: v1
 kind: Service

@@ -67,7 +67,7 @@ network:
   egressEnforcer: cilium                # cilium | proxy | none
   proxy:
     address: juggernaut-egress.juggernaut-system.svc:3128
-  podAuth: shared-secret                # shared-secret | mtls
+  podAuth: mtls                         # controller-issued per-pod certificates; shared-secret is the fallback
   imagePolicy:
     requireDigest: true
     cosign: { enabled: false }
@@ -117,6 +117,31 @@ servers:
         jira_create_issue: ["engineering", "product"]
         jira_add_comment: ["engineering", "product", "support"]
 
+  # --- 1b. A stdio server whose credentials the USER supplies ------------------
+  # mcp-atlassian with per-user API tokens: no IdP exchange (token mode none);
+  # each user seals their Jira/Confluence credentials with `juggernaut secrets set`
+  # and only their own pod ever sees them.
+  - name: atlassian
+    description: Jira + Confluence via mcp-atlassian with the user's own API tokens
+    image: ghcr.io/sooperset/mcp-atlassian@sha256:0000000000000000000000000000000000000000000000000000000000000000
+    transport: stdio
+    command: ["/usr/local/bin/mcp-atlassian"]
+    args: ["--transport", "stdio"]
+    env:
+      JIRA_URL: https://example.atlassian.net
+      CONFLUENCE_URL: https://example.atlassian.net/wiki
+    token: { mode: none }
+    userSecrets:
+      sources: [sealed, store, header]      # companion first, then the vault (tier A), then plain headers
+      items:
+        - { name: JIRA_USERNAME,       env: JIRA_USERNAME,       required: true }
+        - { name: JIRA_API_TOKEN,      env: JIRA_API_TOKEN,      required: true }
+        - { name: CONFLUENCE_USERNAME, env: CONFLUENCE_USERNAME }
+        - { name: CONFLUENCE_API_TOKEN, env: CONFLUENCE_API_TOKEN }
+    egress:
+      - host: example.atlassian.net
+    security: { writableTmp: true }
+
   # --- 2. A Streamable HTTP server -------------------------------------------
   - name: github
     description: GitHub MCP server (Streamable HTTP)
@@ -148,7 +173,7 @@ servers:
 authorization:
   groups:
     - name: engineering
-      serverTypes: ["jira", "github"]
+      serverTypes: ["jira", "atlassian", "github"]
       podsPerUser: 5
     - name: product
       serverTypes: ["jira"]

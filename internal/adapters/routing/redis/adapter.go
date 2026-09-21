@@ -63,6 +63,7 @@ func New(ctx *core.Context) (contracts.RoutingTable, error) {
 		return nil, fmt.Errorf("redis %s: %w", rc.Address, err)
 	}
 	var sealer core.Sealer
+	var macKey []byte
 	if ctx.Options.Bool("seal_pod_tokens", true) {
 		if kek, ok := ctx.Secrets.Env("JUGGERNAUT_KEK"); ok && kek != "" {
 			key, err := base64.StdEncoding.DecodeString(kek)
@@ -72,12 +73,18 @@ func New(ctx *core.Context) (contracts.RoutingTable, error) {
 			if sealer, err = core.NewAESGCM(key); err != nil {
 				return nil, err
 			}
+			macKey = core.DeriveMACKey(key, "routing")
 		} else {
 			ctx.Log.Warn("JUGGERNAUT_KEK not set: pod tokens are stored in Redis unencrypted")
 		}
 	}
 	prefix := ctx.Options.String("key_prefix", rc.KeyPrefix)
-	return NewRedis(c, prefix, cfg.Gateway.MaxSessionAge.Or(12*time.Hour), sealer), nil
+	r := NewRedis(c, prefix, cfg.Gateway.MaxSessionAge.Or(12*time.Hour), sealer)
+	r.macKey = macKey
+	if macKey == nil {
+		ctx.Log.Warn("routing records are not authenticated (no JUGGERNAUT_KEK)")
+	}
+	return r, nil
 }
 
 // Redis is the durable routing table shared by every gateway replica.
@@ -95,6 +102,9 @@ type Redis struct {
 	maxAge time.Duration
 	// Cipher protects pod tokens at rest; nil stores them as-is (dev only).
 	Cipher Cipher
+	// macKey authenticates routing records so a store compromise cannot point
+	// a user at another pod. Derived from the KEK; nil disables (dev only).
+	macKey []byte
 	// mem fronts Redis as an LRU-ish cache for pods.
 	mem *Memory
 }
@@ -123,6 +133,26 @@ type podRecord struct {
 	Phase      Phase     `json:"phase"`
 	CreatedAt  time.Time `json:"createdAt"`
 	ConfigHash string    `json:"configHash"`
+	MAC        []byte    `json:"mac,omitempty"`
+}
+
+func (r *Redis) podMAC(rec *podRecord) []byte {
+	if r.macKey == nil {
+		return nil
+	}
+	return core.MAC(r.macKey, "pod", rec.Subject, rec.ServerType, rec.Name, rec.Endpoint, rec.ConfigHash)
+}
+
+type sessionRecord struct {
+	McpSession
+	MAC []byte `json:"mac,omitempty"`
+}
+
+func (r *Redis) sessionMAC(s *McpSession) []byte {
+	if r.macKey == nil {
+		return nil
+	}
+	return core.MAC(r.macKey, "sess", s.ID, s.Subject, s.ServerType, s.PodName, s.UpstreamSessionID)
 }
 
 func (r *Redis) GetPod(ctx context.Context, key PodKey) (*Pod, error) {
@@ -140,6 +170,9 @@ func (r *Redis) GetPod(ctx context.Context, key PodKey) (*Pod, error) {
 	var rec podRecord
 	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
 		return nil, err
+	}
+	if !core.MACEqual(rec.MAC, r.podMAC(&rec)) {
+		return nil, fmt.Errorf("%w: routing record for %s failed authentication", ErrNotFound, rec.Name)
 	}
 	p := &Pod{Key: key, Name: rec.Name, Endpoint: rec.Endpoint, Phase: rec.Phase, CreatedAt: rec.CreatedAt, ConfigHash: rec.ConfigHash}
 	tok, err := r.c.Get(ctx, r.k("podtok", rec.Name)).Result()
@@ -159,6 +192,7 @@ func (r *Redis) GetPod(ctx context.Context, key PodKey) (*Pod, error) {
 func (r *Redis) PutPod(ctx context.Context, p *Pod) error {
 	rec := podRecord{Subject: p.Key.Subject, ServerType: p.Key.ServerType, Name: p.Name, Endpoint: p.Endpoint,
 		Phase: p.Phase, CreatedAt: p.CreatedAt, ConfigHash: p.ConfigHash}
+	rec.MAC = r.podMAC(&rec)
 	b, _ := json.Marshal(rec)
 	pipe := r.c.TxPipeline()
 	pipe.Set(ctx, r.k("pod", p.Key.ServerType, UserHash(p.Key.Subject)), b, 0)
@@ -253,15 +287,18 @@ func (r *Redis) GetSession(ctx context.Context, id string) (*McpSession, error) 
 	if err != nil {
 		return nil, err
 	}
-	var s McpSession
-	if err := json.Unmarshal([]byte(raw), &s); err != nil {
+	var rec sessionRecord
+	if err := json.Unmarshal([]byte(raw), &rec); err != nil {
 		return nil, err
 	}
-	return &s, nil
+	if !core.MACEqual(rec.MAC, r.sessionMAC(&rec.McpSession)) {
+		return nil, fmt.Errorf("%w: session record %s failed authentication", ErrNotFound, id)
+	}
+	return &rec.McpSession, nil
 }
 
 func (r *Redis) PutSession(ctx context.Context, s *McpSession) error {
-	b, _ := json.Marshal(s)
+	b, _ := json.Marshal(sessionRecord{McpSession: *s, MAC: r.sessionMAC(s)})
 	pipe := r.c.TxPipeline()
 	pipe.Set(ctx, r.k("sess", s.ID), b, r.maxAge)
 	pipe.SAdd(ctx, r.k("sess:by-pod", s.PodName), s.ID)

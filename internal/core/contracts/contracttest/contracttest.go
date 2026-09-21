@@ -174,3 +174,39 @@ func Provisioner(t *testing.T, p contracts.Provisioner) {
 		t.Fatalf("List: %v", err)
 	}
 }
+
+// UserSecretStore checks the sealed-entry round trip and subject scoping.
+func UserSecretStore(t *testing.T, s contracts.UserSecretStore) {
+	t.Helper()
+	ctx := context.Background()
+	subj := "u-" + t.Name()
+	if _, err := s.Get(ctx, subj, "jira"); !errors.Is(err, contracts.ErrNotFound) {
+		t.Fatalf("Get(unknown) must be ErrNotFound, got %v", err)
+	}
+	e := &core.SealedEntry{Version: core.VaultVersion, Salt: []byte("salt"), WrappedDEK: []byte("w"), Nonce: []byte("n"),
+		Ciphertext: []byte("c"), Names: []string{"JIRA_API_TOKEN"}, UpdatedAt: time.Now()}
+	if err := s.Put(ctx, subj, "jira", e); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Get(ctx, subj, "jira")
+	if err != nil || string(got.Ciphertext) != "c" || len(got.Names) != 1 {
+		t.Fatalf("round trip: %+v %v", got, err)
+	}
+	if list, _ := s.List(ctx, subj); len(list) != 1 || list[0] != "jira" {
+		t.Fatalf("List: %v", list)
+	}
+	if err := s.Delete(ctx, subj, "jira"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Get(ctx, subj, "jira"); !errors.Is(err, contracts.ErrNotFound) {
+		t.Fatal("entry must be gone after Delete")
+	}
+	_ = s.Put(ctx, subj, "a", e)
+	_ = s.Put(ctx, subj, "b", e)
+	if err := s.DeleteAll(ctx, subj); err != nil {
+		t.Fatal(err)
+	}
+	if list, _ := s.List(ctx, subj); len(list) != 0 {
+		t.Fatalf("DeleteAll left %v", list)
+	}
+}

@@ -2,6 +2,7 @@ package controller
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"time"
 
@@ -14,6 +15,7 @@ import (
 
 	jugv1 "github.com/cchulo/project-juggernaut/api/v1alpha1"
 	"github.com/cchulo/project-juggernaut/internal/core/contracts"
+	"github.com/cchulo/project-juggernaut/internal/pki"
 )
 
 // SessionReconciler turns Session objects into pods and reports their phase.
@@ -24,6 +26,8 @@ type SessionReconciler struct {
 	// Egress renders the per-session isolation objects; the reconciler applies them
 	// with owner references so they are garbage collected with the Session.
 	Egress contracts.EgressEnforcer
+	// PKI is set for podAuth mtls: every pod gets its own certificate before it starts.
+	PKI *PodPKI
 }
 
 // SetupWithManager registers the reconciler.
@@ -88,6 +92,15 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			// Pod vanished (evicted, node lost): the session is over.
 			return r.fail(ctx, &sess, "pod disappeared")
 		}
+		if r.PKI != nil {
+			var sec corev1.Secret
+			if err := r.Get(ctx, client.ObjectKey{Namespace: sess.Namespace, Name: sess.Spec.PodTokenSecretName}, &sec); err != nil {
+				return ctrl.Result{}, err
+			}
+			if err := r.PKI.IssueForPod(ctx, &sec, sess.Name, st.Spec.MaxSessionAge.Duration+time.Hour); err != nil {
+				return r.fail(ctx, &sess, "issue pod certificate: "+err.Error())
+			}
+		}
 		newPod := BuildPod(&sess, &st, r.Options)
 		if err := controllerutil.SetControllerReference(&sess, newPod, r.Scheme()); err != nil {
 			return ctrl.Result{}, err
@@ -127,7 +140,11 @@ func (r *SessionReconciler) Reconcile(ctx context.Context, req ctrl.Request) (ct
 			now := metav1.Now()
 			sess.Status.Phase = jugv1.PhaseReady
 			sess.Status.PodIP = pod.Status.PodIP
-			sess.Status.Endpoint = fmt.Sprintf("http://%s:%d", pod.Status.PodIP, st.Spec.WrapperPort)
+			scheme := "http"
+			if r.PKI != nil {
+				scheme = "https"
+			}
+			sess.Status.Endpoint = fmt.Sprintf("%s://%s:%d", scheme, pod.Status.PodIP, st.Spec.WrapperPort)
 			sess.Status.ReadyAt = &now
 			sess.Status.Message = ""
 			if r.Egress != nil {
@@ -212,8 +229,31 @@ func (r *SessionReconciler) ensureWrapperConfigMap(ctx context.Context, st *jugv
 	cm := &corev1.ConfigMap{ObjectMeta: metav1.ObjectMeta{Namespace: r.Namespace, Name: st.Name + "-wrapper"}}
 	_, err := controllerutil.CreateOrUpdate(ctx, r.Client, cm, func() error {
 		cm.Labels = map[string]string{jugv1.LabelManagedBy: jugv1.ManagedByValue, jugv1.LabelServerType: st.Name}
-		cm.Data = map[string]string{"wrapper.json": st.Spec.WrapperConfigJSON}
+		data := st.Spec.WrapperConfigJSON
+		if r.PKI != nil {
+			data = withWrapperTLS(data, r.PKI.Cfg.TrustDomain)
+		}
+		cm.Data = map[string]string{"wrapper.json": data}
 		return nil
 	})
 	return err
+}
+
+// withWrapperTLS adds the mounted certificate paths to the rendered wrapper config.
+func withWrapperTLS(wrapperJSON, trustDomain string) string {
+	var m map[string]any
+	if err := json.Unmarshal([]byte(wrapperJSON), &m); err != nil {
+		return wrapperJSON
+	}
+	m["tls"] = map[string]any{
+		"certFile":     "/run/juggernaut-secret/tls.crt",
+		"keyFile":      "/run/juggernaut-secret/tls.key",
+		"clientCAFile": "/run/juggernaut-secret/ca.crt",
+		"gatewayURI":   pki.GatewayID(trustDomain),
+	}
+	b, err := json.Marshal(m)
+	if err != nil {
+		return wrapperJSON
+	}
+	return string(b)
 }

@@ -22,4 +22,6 @@ import (
 	_ "github.com/cchulo/project-juggernaut/internal/adapters/provision/local"
 	_ "github.com/cchulo/project-juggernaut/internal/adapters/routing/memory"
 	_ "github.com/cchulo/project-juggernaut/internal/adapters/routing/redis"
+	_ "github.com/cchulo/project-juggernaut/internal/adapters/secrets/memory"
+	_ "github.com/cchulo/project-juggernaut/internal/adapters/secrets/redis"
 )

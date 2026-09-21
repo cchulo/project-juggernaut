@@ -35,6 +35,7 @@ services:
       JUGGERNAUT_LOG_LEVEL: debug
       JUGGERNAUT_BROKER_CLIENT_SECRET: juggernaut-gateway-secret
       JUGGERNAUT_INTROSPECTION_CLIENT_SECRET: juggernaut-gateway-secret
+      JUGGERNAUT_CONTAINER_NAME: juggernaut-gateway-1   # lets the local provisioner join per-user networks
     ports:
       - "8080:8080"
       - "127.0.0.1:24680:24680"

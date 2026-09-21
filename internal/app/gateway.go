@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net/http"
 
 	"github.com/cchulo/project-juggernaut/internal/admin"
 	"github.com/cchulo/project-juggernaut/internal/audit"
@@ -12,6 +13,7 @@ import (
 	"github.com/cchulo/project-juggernaut/internal/core/contracts"
 	"github.com/cchulo/project-juggernaut/internal/core/registry"
 	"github.com/cchulo/project-juggernaut/internal/gateway"
+	"github.com/cchulo/project-juggernaut/internal/mcpproxy"
 	"github.com/cchulo/project-juggernaut/internal/router"
 	"github.com/cchulo/project-juggernaut/internal/telemetry"
 )
@@ -95,9 +97,21 @@ func GatewayFromConfig(ctx context.Context, store *config.Store, secrets core.Se
 	if err := build("audit", err); err != nil {
 		return nil, err
 	}
+	secretStore, err := registry.Secrets.Build(cfg.Gateway.UserSecrets.Store.Type, registry.WithOptions(base, cfg.Gateway.UserSecrets.Store.Options))
+	if err := build("secrets", err); err != nil {
+		return nil, err
+	}
+	var podTLS *mcpproxy.PodTLS
+	if cfg.Network.PodAuth == "mtls" {
+		m := cfg.Network.MTLS
+		podTLS, err = mcpproxy.LoadPodTLS(m.CertFile, m.KeyFile, m.CAFile, m.TrustDomain)
+		if err != nil {
+			return nil, fmt.Errorf("podAuth mtls: %w", err)
+		}
+	}
 
 	srv := gateway.New(gateway.Deps{Store: store, Identity: identity, Policy: policy, Broker: broker,
-		Table: table, Provisioner: provisioner, Log: log})
+		Table: table, Provisioner: provisioner, SecretStore: secretStore, Log: log, PodTLS: podTLS})
 	g := &Gateway{Server: srv, Store: store}
 	g.close = append(g.close, sink.Close)
 
@@ -122,7 +136,15 @@ func GatewayFromConfig(ctx context.Context, store *config.Store, secrets core.Se
 	}
 
 	// Aggregated /mcp router.
-	rt := router.New(store, policy, broker, srv.Manager(), table, log)
+	rt := router.New(store, identity, policy, broker, srv.Manager(), table, log)
+	rt.PodTLS = podTLS
+	rt.Secrets = func(ctx context.Context, hdr http.Header, p *core.Principal, s *config.Server) (http.Header, func(), error) {
+		res, err := srv.ResolveUserSecrets(ctx, hdr, p, s)
+		if err != nil {
+			return nil, nil, err
+		}
+		return res.Headers(store.Get().Config.Gateway.UserSecrets), func() { core.ZeroMap(res.Plain) }, nil
+	}
 	rt.OnCall = func(ev router.CallEvent) {
 		o := outcome(ev.IsError, ev.Err)
 		metrics.ToolCalls.WithLabelValues(ev.ServerType, o).Inc()
@@ -132,6 +154,10 @@ func GatewayFromConfig(ctx context.Context, store *config.Store, secrets core.Se
 			DurationMS: ev.Duration.Milliseconds(), Outcome: o, Error: errString(ev.Err), Lazy: ev.Lazy})
 	}
 	srv.Hooks.RouterHandler = rt.Handler()
+	srv.Hooks.OnAdminAction = func(actor, action, target string) {
+		auditLog.Write(contracts.AuditRecord{Kind: "admin_action", Subject: actor, Outcome: "ok",
+			Extra: map[string]any{"action": action, "target": target}})
+	}
 
 	// Admin listener, only when a directory is configured.
 	if cfg.Identity.KeycloakAdmin != nil {

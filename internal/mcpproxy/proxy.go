@@ -7,6 +7,8 @@ package mcpproxy
 
 import (
 	"context"
+	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -35,6 +37,8 @@ type Upstream struct {
 	UserToken   string
 	TokenHeader string
 	TokenScheme string
+	// Extra headers to add (user secrets); nothing else from the client is forwarded.
+	Extra http.Header
 }
 
 // Result is what the proxy learned from the upstream response.
@@ -48,17 +52,53 @@ type Proxy struct {
 	Client *http.Client
 	// MaxBody bounds the request body copied upstream.
 	MaxBody int64
+	// TLS is set for podAuth mtls.
+	TLS *PodTLS
 }
 
 // New builds a proxy with sane transport settings for long-lived SSE streams.
-func New(maxBody int64) *Proxy {
+// With tls, every connection is mutual TLS and the pod's SPIFFE identity is verified.
+func New(maxBody int64, tls *PodTLS) *Proxy {
 	tr := &http.Transport{
 		MaxIdleConnsPerHost:   16,
 		IdleConnTimeout:       90 * time.Second,
 		ResponseHeaderTimeout: 0, // SSE may take a while to send headers on long calls
 		DisableCompression:    true,
 	}
-	return &Proxy{Client: &http.Client{Transport: tr}, MaxBody: maxBody}
+	if tls != nil {
+		tr.TLSClientConfig = tls.ClientConfig()
+	}
+	return &Proxy{Client: &http.Client{Transport: tr}, MaxBody: maxBody, TLS: tls}
+}
+
+// SessionKey asks the wrapper for its ephemeral public key (tier-B sealing).
+func (p *Proxy) SessionKey(ctx context.Context, pod PodRef) (string, error) {
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, strings.TrimRight(pod.GetEndpoint(), "/")+"/session-key", nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set(HeaderPodToken, pod.GetPodToken())
+	resp, err := p.Client.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return "", fmt.Errorf("status %d", resp.StatusCode)
+	}
+	var body struct {
+		PublicKey string `json:"publicKey"`
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&body); err != nil {
+		return "", err
+	}
+	return body.PublicKey, nil
+}
+
+// PodRef is the subset of a routing-table pod the proxy needs.
+type PodRef interface {
+	GetEndpoint() string
+	GetPodToken() string
 }
 
 // Forward sends r to the upstream and streams the response back to w.
@@ -76,9 +116,15 @@ func (p *Proxy) Forward(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		return nil, err
 	}
 	copyHeaders(req.Header, r.Header)
-	// The client's bearer token must not leave the gateway.
+	// The client's bearer token must not leave the gateway, and no client-supplied
+	// X-Juggernaut-* header reaches a pod except through Upstream.Extra.
 	req.Header.Del("Authorization")
 	req.Header.Del("Cookie")
+	for k := range req.Header {
+		if strings.HasPrefix(strings.ToLower(k), "x-juggernaut-") {
+			req.Header.Del(k)
+		}
+	}
 	req.Header.Set(HeaderPodToken, up.PodToken)
 	req.Header.Set(HeaderSubject, up.Subject)
 	req.Header.Set(HeaderServerType, up.ServerType)
@@ -86,6 +132,12 @@ func (p *Proxy) Forward(ctx context.Context, w http.ResponseWriter, r *http.Requ
 		req.Header.Set(HeaderSessionID, up.UpstreamSessionID)
 	} else {
 		req.Header.Del(HeaderSessionID)
+	}
+	for k, vv := range up.Extra {
+		req.Header.Del(k)
+		for _, v := range vv {
+			req.Header.Add(k, v)
+		}
 	}
 	if up.UserToken != "" {
 		h := up.TokenHeader

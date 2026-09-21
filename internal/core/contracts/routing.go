@@ -71,3 +71,9 @@ type RoutingTable interface {
 	// InFlight adjusts the in-flight counter by delta (0 reads it).
 	InFlight(ctx context.Context, podName string, delta int) (int, error)
 }
+
+// GetEndpoint satisfies mcpproxy.PodRef.
+func (p *Pod) GetEndpoint() string { return p.Endpoint }
+
+// GetPodToken satisfies mcpproxy.PodRef.
+func (p *Pod) GetPodToken() string { return p.PodToken }

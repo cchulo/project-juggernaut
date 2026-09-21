@@ -51,10 +51,13 @@ spec:
             readOnlyRootFilesystem: true
           volumeMounts:
             - { name: config, mountPath: /etc/juggernaut, readOnly: true }
+            - { name: pod-tls, mountPath: /etc/juggernaut/tls, readOnly: true }
           resources: {{- toYaml .Values.gateway.resources | nindent 12 }}
       volumes:
         - name: config
           configMap: { name: {{ .Release.Name }}-config }
+        - name: pod-tls
+          secret: { secretName: juggernaut-gateway-client-tls, optional: true }
 ---
 apiVersion: v1
 kind: Service

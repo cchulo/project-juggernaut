@@ -95,6 +95,10 @@
             },
             "keyFile": {
               "type": "string"
+            },
+            "clientCAFile": {
+              "type": "string",
+              "description": "turns on mutual TLS: clients must present a certificate signed by this CA"
             }
           }
         }
@@ -469,6 +473,42 @@
             }
           }
         },
+        "userSecrets": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "store": {
+              "type": "object",
+              "additionalProperties": false,
+              "properties": {
+                "type": {
+                  "type": "string",
+                  "enum": [
+                    "memory",
+                    "redis"
+                  ]
+                },
+                "options": {
+                  "type": "object",
+                  "additionalProperties": true
+                }
+              },
+              "description": "where sealed entries live; default: the routing type"
+            },
+            "vaultKeyHeader": {
+              "type": "string",
+              "default": "X-Juggernaut-Vault-Key"
+            },
+            "secretHeaderPrefix": {
+              "type": "string",
+              "default": "X-Juggernaut-Secret-"
+            },
+            "sealedHeaderPrefix": {
+              "type": "string",
+              "default": "X-Juggernaut-Sealed-Secrets-"
+            }
+          }
+        },
         "redis": {
           "type": "object",
           "additionalProperties": false,
@@ -583,7 +623,38 @@
             "shared-secret",
             "mtls"
           ],
-          "default": "shared-secret"
+          "default": "shared-secret",
+          "description": "shared-secret: per-pod secret header; mtls: controller-issued per-pod certificates, mutual verification by SPIFFE URI SAN"
+        },
+        "mtls": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "certFile": {
+              "type": "string",
+              "default": "/etc/juggernaut/tls/tls.crt"
+            },
+            "keyFile": {
+              "type": "string",
+              "default": "/etc/juggernaut/tls/tls.key"
+            },
+            "caFile": {
+              "type": "string",
+              "default": "/etc/juggernaut/tls/ca.crt"
+            },
+            "caSecretName": {
+              "type": "string",
+              "default": "juggernaut-pod-ca"
+            },
+            "gatewaySecretName": {
+              "type": "string",
+              "default": "juggernaut-gateway-client-tls"
+            },
+            "trustDomain": {
+              "type": "string",
+              "default": "juggernaut"
+            }
+          }
         },
         "gatewayPodSelector": {
           "type": "object",
@@ -951,6 +1022,10 @@
         "token": {
           "$ref": "#/$defs/Token"
         },
+        "userSecrets": {
+          "$ref": "#/$defs/UserSecrets",
+          "description": "third-party credentials the user supplies for their own pod (e.g. Jira/Confluence API tokens)"
+        },
         "egress": {
           "type": "array",
           "items": {
@@ -1144,6 +1219,70 @@
             "service"
           ],
           "default": "user"
+        }
+      }
+    },
+    "UserSecretItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "name"
+      ],
+      "properties": {
+        "name": {
+          "type": "string",
+          "pattern": "^[A-Z0-9_]+$",
+          "description": "name the user supplies"
+        },
+        "env": {
+          "type": "string",
+          "pattern": "^[A-Z_][A-Z0-9_]*$",
+          "description": "stdio: environment variable the child reads"
+        },
+        "header": {
+          "type": "string",
+          "description": "http: header the server reads"
+        },
+        "file": {
+          "type": "string",
+          "description": "tmpfs path the server reads"
+        },
+        "required": {
+          "type": "boolean",
+          "default": false
+        }
+      }
+    },
+    "UserSecrets": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "items"
+      ],
+      "properties": {
+        "sources": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "enum": [
+              "header",
+              "store",
+              "sealed"
+            ]
+          },
+          "default": [
+            "header",
+            "store",
+            "sealed"
+          ],
+          "description": "lookup order: plaintext headers from the client, the sealed vault (tier A, needs the vault key header), blobs sealed to the pod key (tier B)"
+        },
+        "items": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "$ref": "#/$defs/UserSecretItem"
+          }
         }
       }
     }

@@ -68,6 +68,29 @@ The first call that needs an adapter's pod starts it; the request waits up to
 `servers[].idleTimeout`; the client's session id becomes invalid (404), and the client
 re-initializes on its own.
 
+## Credentials the server needs from you (Jira, Confluence, ...)
+
+Adapters declared with `userSecrets` need your own API tokens. Three ways, from most to least
+private; the operator picks which are accepted ([SECURITY.md](SECURITY.md)):
+
+**Companion (tier B, the gateway never sees your secrets):**
+
+```sh
+juggernaut secrets init --passphrase '...'
+juggernaut secrets set atlassian JIRA_USERNAME=you@corp.com JIRA_API_TOKEN=...
+juggernaut connect --gateway https://mcp.example.internal        # logs in, listens on 127.0.0.1:8090
+claude mcp add --transport http juggernaut http://127.0.0.1:8090/mcp --scope user
+```
+
+Nothing sensitive is in the client's config; the companion seals your secrets to your own pod's
+key on every call.
+
+**Vault key header (tier A):** after `secrets set`, give the client the key from
+`~/.config/juggernaut/vault.json` as `X-Juggernaut-Vault-Key`. The gateway decrypts only while
+serving your request.
+
+**Plain headers:** `X-Juggernaut-Secret-JIRA_API_TOKEN: ...` in the client config; nothing stored.
+
 ## Admin listener
 
 Operators reach `http://127.0.0.1:24680/admin` (port-forward in a cluster). The page logs in with

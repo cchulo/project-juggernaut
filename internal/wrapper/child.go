@@ -2,11 +2,14 @@ package wrapper
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
+	"sort"
 	"sync"
 	"time"
 
@@ -26,6 +29,7 @@ type Child struct {
 	cmd           *exec.Cmd
 	token         string    // token the child was started with (env mode)
 	tokenExp      time.Time // expiry of that token, if known
+	secretsFP     string    // fingerprint of the user secrets the child was started with
 	restarts      []time.Time
 	generation    int
 	inflight      int
@@ -41,14 +45,16 @@ func NewChild(cfg *Config, log *slog.Logger, r *Redactor) *Child {
 var ErrRestartBudget = errors.New("child restart budget exhausted")
 
 // Session returns a live client session, starting the child if needed.
-// token is the per-user token for env/file modes (may be empty for none/static).
-func (c *Child) Session(ctx context.Context, token string, tokenExp time.Time) (*mcp.ClientSession, error) {
+// token is the per-user token for env/file modes (may be empty for none/static);
+// secrets are the user's credentials for this request (name → value).
+func (c *Child) Session(ctx context.Context, token string, tokenExp time.Time, secrets map[string]string) (*mcp.ClientSession, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	fp := fingerprint(secrets)
 	if c.session != nil {
-		// Rotation for env mode: the child only read the token at start. If the
-		// token changed and nothing is in flight, restart now; otherwise defer.
-		if c.cfg.Token.Mode == "env" && token != "" && token != c.token {
+		// Rotation: the child only read env at start. If the token or a secret
+		// changed and nothing is in flight, restart now; otherwise defer to idle.
+		if (c.cfg.Token.Mode == "env" && token != "" && token != c.token) || (fp != "" && fp != c.secretsFP) {
 			if c.inflight == 0 {
 				c.log.Info("token rotated; restarting child at idle boundary")
 				c.stopLocked()
@@ -63,10 +69,31 @@ func (c *Child) Session(ctx context.Context, token string, tokenExp time.Time) (
 	if !c.restartAllowedLocked() {
 		return nil, ErrRestartBudget
 	}
-	if err := c.startLocked(ctx, token, tokenExp); err != nil {
+	if err := c.startLocked(ctx, token, tokenExp, secrets); err != nil {
 		return nil, err
 	}
+	c.secretsFP = fp
 	return c.session, nil
+}
+
+// fingerprint is a stable digest of the secret values (never logged).
+func fingerprint(secrets map[string]string) string {
+	if len(secrets) == 0 {
+		return ""
+	}
+	keys := make([]string, 0, len(secrets))
+	for k := range secrets {
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+	h := sha256.New()
+	for _, k := range keys {
+		h.Write([]byte(k))
+		h.Write([]byte{0})
+		h.Write([]byte(secrets[k]))
+		h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil))
 }
 
 // Begin marks a request in flight; End releases it and applies a deferred restart.
@@ -102,12 +129,27 @@ func (c *Child) restartAllowedLocked() bool {
 	return len(c.restarts) <= max
 }
 
-func (c *Child) startLocked(ctx context.Context, token string, tokenExp time.Time) error {
+func (c *Child) startLocked(ctx context.Context, token string, tokenExp time.Time, secrets map[string]string) error {
 	if len(c.cfg.Command) == 0 {
 		return errors.New("wrapper: no command configured")
 	}
 	cmd := exec.Command(c.cfg.Command[0], append(c.cfg.Command[1:], c.cfg.Args...)...)
 	cmd.Env = childEnv(c.cfg, token)
+	for _, it := range c.cfg.UserSecrets {
+		v, ok := secrets[it.Name]
+		if !ok {
+			continue
+		}
+		c.redactor.Add(v)
+		if it.Env != "" {
+			cmd.Env = append(cmd.Env, it.Env+"="+v)
+		}
+		if it.File != "" {
+			if err := writeTokenFile(it.File, v); err != nil {
+				return fmt.Errorf("secret file %s: %w", it.File, err)
+			}
+		}
+	}
 	stderr, err := cmd.StderrPipe()
 	if err != nil {
 		return err

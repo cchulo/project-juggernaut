@@ -2,8 +2,9 @@
 // is validated locally, then the IdP is asked (at most once per interval per
 // token) whether it is still active, so revocation is detected before expiry.
 //
-// Options: those of bearer_jwt, plus fail_open (default true: an unreachable
-// introspection endpoint accepts a cryptographically valid token).
+// Options: those of bearer_jwt, plus fail_open (default false: an unreachable
+// introspection endpoint rejects the request; zero trust means an unverifiable
+// token is not accepted on the strength of the network being fine yesterday).
 package bearer_introspect
 
 import (
@@ -64,7 +65,7 @@ func (a *Adapter) Resolve(ctx context.Context, req contracts.RequestInfo) (*core
 	}
 	active, err := a.active(ctx, p)
 	if err != nil {
-		if !a.ctx.Options.Bool("fail_open", true) {
+		if !a.ctx.Options.Bool("fail_open", false) {
 			return nil, fmt.Errorf("%w: introspection unavailable", contracts.ErrUnauthenticated)
 		}
 		a.ctx.Log.Warn("introspection failed; accepting token until expiry", "err", err)

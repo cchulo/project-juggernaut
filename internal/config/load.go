@@ -232,6 +232,19 @@ func ApplyDefaults(c *Config) {
 	if c.Authorization.Type == "" {
 		c.Authorization.Type = "groups"
 	}
+	us := &g.UserSecrets
+	if us.Store.Type == "" {
+		us.Store.Type = g.Routing.Type
+	}
+	if us.VaultKeyHeader == "" {
+		us.VaultKeyHeader = "X-Juggernaut-Vault-Key"
+	}
+	if us.SecretHeaderPrefix == "" {
+		us.SecretHeaderPrefix = "X-Juggernaut-Secret-"
+	}
+	if us.SealedHeaderPrefix == "" {
+		us.SealedHeaderPrefix = "X-Juggernaut-Sealed-Secrets-"
+	}
 	if g.Audit.Sink == "" {
 		g.Audit.Sink = "stdout"
 	}
@@ -248,6 +261,29 @@ func ApplyDefaults(c *Config) {
 	}
 	if n.PodAuth == "" {
 		n.PodAuth = "shared-secret"
+	}
+	if n.PodAuth == "mtls" {
+		if n.MTLS == nil {
+			n.MTLS = &MTLS{}
+		}
+		if n.MTLS.CertFile == "" {
+			n.MTLS.CertFile = "/etc/juggernaut/tls/tls.crt"
+		}
+		if n.MTLS.KeyFile == "" {
+			n.MTLS.KeyFile = "/etc/juggernaut/tls/tls.key"
+		}
+		if n.MTLS.CAFile == "" {
+			n.MTLS.CAFile = "/etc/juggernaut/tls/ca.crt"
+		}
+		if n.MTLS.CASecretName == "" {
+			n.MTLS.CASecretName = "juggernaut-pod-ca"
+		}
+		if n.MTLS.GatewaySecretName == "" {
+			n.MTLS.GatewaySecretName = "juggernaut-gateway-client-tls"
+		}
+		if n.MTLS.TrustDomain == "" {
+			n.MTLS.TrustDomain = "juggernaut"
+		}
 	}
 	if n.GatewayPodSelector == nil {
 		n.GatewayPodSelector = map[string]string{"app.kubernetes.io/name": "juggernaut-gateway"}
@@ -344,6 +380,9 @@ func ApplyDefaults(c *Config) {
 		if s.Tools.Expose == nil {
 			s.Tools.Expose = &Expose{Mode: "all"}
 		}
+		if s.UserSecrets != nil && len(s.UserSecrets.Sources) == 0 {
+			s.UserSecrets.Sources = []string{"header", "store", "sealed"}
+		}
 	}
 }
 
@@ -400,8 +439,14 @@ func Validate(c *Config) error {
 			add("identity.keycloakAdmin needs a bearer identity type for the admin listener")
 		}
 	}
-	if c.Network.PodAuth == "mtls" {
-		add("network.podAuth: mtls is reserved for a later milestone; use shared-secret")
+	if c.Network.PodAuth == "mtls" && c.Gateway.Runtime.Kind != RuntimeKube {
+		add("network.podAuth: mtls needs gateway.runtime.kind kube (the controller issues the certificates)")
+	}
+	if (c.Identity.Type == "none" || c.Identity.Type == "static") && !isLoopback(c.Gateway.Listeners.Data.Address) && !c.Network.AllowInsecure {
+		add("identity.type %s off a loopback data listener requires network.allowInsecure: true (development only)", c.Identity.Type)
+	}
+	if c.Gateway.UserSecrets.Store.Type == "memory" && c.Gateway.Runtime.Kind == RuntimeKube {
+		add("gateway.userSecrets.store.type memory cannot be shared between gateway replicas; configure gateway.redis")
 	}
 	if c.Identity.Broker.Mode == BrokerExchange && !c.Identity.Broker.ClientSecretRef.IsSet() {
 		add("identity.broker.clientSecretRef is required for broker mode exchange")
@@ -442,6 +487,26 @@ func Validate(c *Config) error {
 		}
 		if s.Token.Mode != TokenNone && s.Token.Mode != TokenStatic && c.Identity.Broker.Mode == BrokerNone {
 			add("servers[%s]: token mode %s needs identity.broker.mode exchange or refresh-token", s.Name, s.Token.Mode)
+		}
+		if s.UserSecrets != nil {
+			seenNames := map[string]bool{}
+			for _, it := range s.UserSecrets.Items {
+				if it.Name == "" || seenNames[it.Name] {
+					add("servers[%s].userSecrets.items: names must be unique and non-empty", s.Name)
+				}
+				seenNames[it.Name] = true
+				if it.Env == "" && it.Header == "" && it.File == "" {
+					add("servers[%s].userSecrets.items[%s]: one of env, header, file is required", s.Name, it.Name)
+				}
+				if it.Header != "" && s.Transport == TransportStdio {
+					add("servers[%s].userSecrets.items[%s]: header delivery is not possible for stdio", s.Name, it.Name)
+				}
+			}
+			for _, src := range s.UserSecrets.Sources {
+				if src != "header" && src != "store" && src != "sealed" {
+					add("servers[%s].userSecrets.sources: unknown source %q", s.Name, src)
+				}
+			}
 		}
 		for _, e := range s.Egress {
 			if !fqdnRe.MatchString(e.Host) {

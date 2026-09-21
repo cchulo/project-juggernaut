@@ -35,10 +35,11 @@ type Listener struct {
 	TLS     *ListenerTLS `json:"tls,omitempty"`
 }
 
-// ListenerTLS is a certificate pair on disk.
+// ListenerTLS is a certificate pair on disk; ClientCAFile turns on mutual TLS.
 type ListenerTLS struct {
-	CertFile string `json:"certFile"`
-	KeyFile  string `json:"keyFile"`
+	CertFile     string `json:"certFile"`
+	KeyFile      string `json:"keyFile"`
+	ClientCAFile string `json:"clientCAFile,omitempty"`
 }
 
 // Identity is the IdP connection and token brokering configuration.
@@ -133,20 +134,21 @@ const (
 
 // Gateway holds gateway-wide settings.
 type Gateway struct {
-	PublicURL          string    `json:"publicURL"`
-	Listeners          Listeners `json:"listeners,omitempty"`
-	AllowInsecureAdmin bool      `json:"allowInsecureAdmin,omitempty"`
-	Runtime            Runtime   `json:"runtime,omitempty"`
-	ColdStartBudget    Duration  `json:"coldStartBudget,omitempty"`
-	IdleTimeout        Duration  `json:"idleTimeout,omitempty"`
-	MaxSessionAge      Duration  `json:"maxSessionAge,omitempty"`
-	MaxBodyBytes       int64     `json:"maxBodyBytes,omitempty"`
-	Caps               Caps      `json:"caps,omitempty"`
-	Tools              ToolsOpts `json:"tools,omitempty"`
-	Routing            Routing   `json:"routing,omitempty"`
-	Redis              *Redis    `json:"redis,omitempty"`
-	Audit              Audit     `json:"audit,omitempty"`
-	Telemetry          Telemetry `json:"telemetry,omitempty"`
+	PublicURL          string             `json:"publicURL"`
+	Listeners          Listeners          `json:"listeners,omitempty"`
+	AllowInsecureAdmin bool               `json:"allowInsecureAdmin,omitempty"`
+	Runtime            Runtime            `json:"runtime,omitempty"`
+	ColdStartBudget    Duration           `json:"coldStartBudget,omitempty"`
+	IdleTimeout        Duration           `json:"idleTimeout,omitempty"`
+	MaxSessionAge      Duration           `json:"maxSessionAge,omitempty"`
+	MaxBodyBytes       int64              `json:"maxBodyBytes,omitempty"`
+	Caps               Caps               `json:"caps,omitempty"`
+	Tools              ToolsOpts          `json:"tools,omitempty"`
+	Routing            Routing            `json:"routing,omitempty"`
+	UserSecrets        UserSecretsGateway `json:"userSecrets,omitempty"`
+	Redis              *Redis             `json:"redis,omitempty"`
+	Audit              Audit              `json:"audit,omitempty"`
+	Telemetry          Telemetry          `json:"telemetry,omitempty"`
 }
 
 // Runtime selects and configures the session backend.
@@ -195,6 +197,20 @@ type Routing struct {
 	Options map[string]any `json:"options,omitempty"`
 }
 
+// UserSecretsGateway configures the user-secret vault on the gateway side.
+type UserSecretsGateway struct {
+	// Store selects the UserSecretStore adapter (memory, redis). Default: the routing type.
+	Store Routing `json:"store,omitempty"`
+	// VaultKeyHeader carries the user's derived key in tier A (default X-Juggernaut-Vault-Key).
+	VaultKeyHeader string `json:"vaultKeyHeader,omitempty"`
+	// SecretHeaderPrefix is the header prefix for plaintext secrets supplied by the client
+	// (default X-Juggernaut-Secret-).
+	SecretHeaderPrefix string `json:"secretHeaderPrefix,omitempty"`
+	// SealedHeaderPrefix is the header prefix for tier-B blobs sealed to a pod key
+	// (default X-Juggernaut-Sealed-Secrets-; the adapter name follows).
+	SealedHeaderPrefix string `json:"sealedHeaderPrefix,omitempty"`
+}
+
 // Redis is the routing-table store.
 type Redis struct {
 	Address     string     `json:"address"`
@@ -235,11 +251,26 @@ type Network struct {
 	EgressEnforcer     EgressEnforcer    `json:"egressEnforcer,omitempty"`
 	Proxy              *ProxyNetwork     `json:"proxy,omitempty"`
 	PodAuth            string            `json:"podAuth,omitempty"`
+	MTLS               *MTLS             `json:"mtls,omitempty"`
 	GatewayPodSelector map[string]string `json:"gatewayPodSelector,omitempty"`
 	DenyCIDRs          []string          `json:"denyCIDRs,omitempty"`
 	APIServerCIDR      string            `json:"apiServerCIDR,omitempty"`
 	ImagePolicy        ImagePolicy       `json:"imagePolicy,omitempty"`
 	AllowInsecure      bool              `json:"allowInsecure,omitempty"`
+}
+
+// MTLS locates the gateway's client certificate for podAuth mtls. The
+// controller issues it from the internal CA; the gateway mounts the Secret.
+type MTLS struct {
+	CertFile string `json:"certFile,omitempty"`
+	KeyFile  string `json:"keyFile,omitempty"`
+	CAFile   string `json:"caFile,omitempty"`
+	// CASecretName is the Secret the controller keeps the CA in (system namespace).
+	CASecretName string `json:"caSecretName,omitempty"`
+	// GatewaySecretName is the Secret the controller issues the gateway client cert into.
+	GatewaySecretName string `json:"gatewaySecretName,omitempty"`
+	// TrustDomain is the SPIFFE trust domain used in URI SANs.
+	TrustDomain string `json:"trustDomain,omitempty"`
 }
 
 // ProxyNetwork is the egress proxy address for proxy mode.
@@ -281,6 +312,7 @@ type Server struct {
 	HTTP             *HTTPServer       `json:"http,omitempty"`
 	Wrapper          Wrapper           `json:"wrapper,omitempty"`
 	Token            Token             `json:"token"`
+	UserSecrets      *UserSecrets      `json:"userSecrets,omitempty"`
 	Egress           []Egress          `json:"egress,omitempty"`
 	Resources        Resources         `json:"resources,omitempty"`
 	RuntimeClassName string            `json:"runtimeClassName,omitempty"`
@@ -335,6 +367,25 @@ type Token struct {
 	Header    string     `json:"header,omitempty"`
 	Scheme    string     `json:"scheme,omitempty"`
 	StaticRef *SecretRef `json:"staticRef,omitempty"`
+}
+
+// UserSecrets declares third-party credentials a user supplies for their own
+// pod of this server type (Jira/Confluence API tokens for mcp-atlassian).
+type UserSecrets struct {
+	// Sources in lookup order: header (plaintext per request), store (sealed vault,
+	// needs the vault key header), sealed (tier B blob sealed to the pod key).
+	Sources []string         `json:"sources,omitempty"`
+	Items   []UserSecretItem `json:"items"`
+}
+
+// UserSecretItem is one credential: the name the user supplies and where the
+// server reads it (env for stdio, header for HTTP, file for either).
+type UserSecretItem struct {
+	Name     string `json:"name"`
+	Env      string `json:"env,omitempty"`
+	Header   string `json:"header,omitempty"`
+	File     string `json:"file,omitempty"`
+	Required bool   `json:"required,omitempty"`
 }
 
 // Egress is one allowed destination.

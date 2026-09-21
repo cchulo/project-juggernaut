@@ -77,6 +77,13 @@ func ControllerFromConfig(ctx context.Context, store *config.Store, secrets core
 		Client: mgr.GetClient(), Namespace: ns, Egress: egress,
 		Options: controller.PodOptions{WrapperImage: o.WrapperImage, Env: podEnv, DisableDNS: disableDNS},
 	}
+	if cfg.Network.PodAuth == "mtls" {
+		pk := &controller.PodPKI{Client: mgr.GetClient(), SystemNamespace: "juggernaut-system", Cfg: *cfg.Network.MTLS}
+		rec.PKI = pk
+		if err := mgr.Add(runnable(pk.Ensure)); err != nil {
+			return nil, err
+		}
+	}
 	if err := rec.SetupWithManager(mgr); err != nil {
 		return nil, err
 	}

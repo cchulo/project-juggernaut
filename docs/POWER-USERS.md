@@ -46,8 +46,8 @@ what it does, and what happens underneath. Sections follow `juggernaut.yaml`; th
 | `keycloakAdmin` | enables the admin listener: `realm`, `clientId`, `clientSecretRef`, `baseURL` (defaults to the issuer's origin), `adminRole` (default `juggernaut-admin`) |
 
 Adapter options: `bearer_jwt`: `jwks_url`, `skip_audience_check` (never in production).
-`bearer_introspect`: those plus `fail_open` (default true: an unreachable introspection endpoint
-accepts a cryptographically valid token and logs).
+`bearer_introspect`: those plus `fail_open` (default **false**: an unreachable introspection
+endpoint rejects the request; set true only if availability matters more than revocation latency).
 
 What a principal looks like after resolution: subject, username, display name, `kind` (`user`, or
 `service` for client-credentials tokens: no `email` / `preferred_username` and `azp` or
@@ -81,7 +81,7 @@ request; `header` mode needs nothing. Revocation: disabling a user in the admin 
 | Key | Default | Meaning |
 |---|---|---|
 | `publicURL` | required | what clients use; the `resource` in the protected-resource metadata |
-| `listeners.data` / `admin` / `metrics` | `:8080` / `127.0.0.1:24680` / `:9090` | three separate servers; the admin listener must be loopback or carry `tls` (or `allowInsecureAdmin: true`) |
+| `listeners.data` / `admin` / `metrics` | `:8080` / `127.0.0.1:24680` / `:9090` | three separate servers; the admin listener must be loopback or carry `tls` (or `allowInsecureAdmin: true`); `tls.clientCAFile` requires client certificates |
 | `runtime.kind` | `kube` | `local` (docker or process on this host) or `kube` (the controller) |
 | `runtime.local` | | `mode: docker | process`, `wrapperBinary`, `network`, `portRange` |
 | `routing.type` | `redis` when `redis` is set, else `memory` | where session ids, pods and activity live; `kube` requires `redis` |
@@ -101,11 +101,13 @@ request; `header` mode needs nothing. Revocation: disabling a user in the admin 
 
 Routing adapter options: `redis`: `key_prefix`, `seal_pod_tokens` (default true; needs
 `JUGGERNAUT_KEK`, base64 of 32 bytes, in the gateway's environment; without it tokens are stored
-unsealed and a warning is logged).
+unsealed and a warning is logged). With the KEK present every pod and session record also carries
+an HMAC; a tampered record reads as not found.
 
 Local provisioner options: `state_dir` (default `$JUGGERNAUT_STATE_DIR` or `/var/lib/juggernaut`).
 `mode: docker` runs `docker run --read-only --cap-drop ALL` with the server image and the wrapper
-as entrypoint on `runtime.local.network`; `mode: process` execs `wrapperBinary` directly with
+as entrypoint on a per-user bridge network `<runtime.local.network>-<userHash>` (the gateway
+container joins it when `JUGGERNAUT_CONTAINER_NAME` is set); `mode: process` execs `wrapperBinary` directly with
 ports from `portRange`. Neither isolates anything; they exist for development.
 
 ## 5. `network`
@@ -115,7 +117,8 @@ ports from `portRange`. Neither isolates anything; they exist for development.
 | `sessionsNamespace` | `juggernaut-sessions` | where session pods run |
 | `egressEnforcer` | `cilium` | `cilium` (CiliumNetworkPolicy `toFQDNs` + DNS proxy rules), `proxy` (juggernaut-egress CONNECT proxy, pods without a resolver), `none` (laptops; requires `allowInsecure: true`) |
 | `proxy.address` | | required in proxy mode; exported to pods as `HTTPS_PROXY` |
-| `podAuth` | `shared-secret` | per-pod secret in a Secret; `mtls` is reserved and rejected |
+| `podAuth` | `shared-secret` | `mtls` (recommended, needs `runtime.kind: kube`): controller-issued per-pod certificates, both sides verify SPIFFE identities; `shared-secret`: the per-pod secret header only, no TLS (laptops) |
+| `mtls.*` | `/etc/juggernaut/tls/{tls.crt,tls.key,ca.crt}`, Secrets `juggernaut-pod-ca` / `juggernaut-gateway-client-tls`, trust domain `juggernaut` | where the gateway finds its client certificate and what the controller names its Secrets |
 | `gatewayPodSelector` | `app.kubernetes.io/name: juggernaut-gateway` | who may reach pods |
 | `denyCIDRs`, `apiServerCIDR` | metadata + link-local + `fd00::/8` | never reachable even in `none` |
 | `imagePolicy.requireDigest` | true | `servers[].image` must be `@sha256:...` |
@@ -157,6 +160,36 @@ container from `--wrapper-image` when the image lacks it), `/etc/juggernaut/wrap
 `<type>-wrapper` ConfigMap, `/run/juggernaut-secret/pod-token` from the per-session Secret,
 `/run/juggernaut` tmpfs, readiness on `/readyz` every second, liveness on `/healthz`.
 
+## 6b. `servers[].userSecrets`: credentials the user supplies
+
+For servers that need the user's own third-party credentials (mcp-atlassian with Jira and
+Confluence API tokens), declare what the server needs and where it reads it:
+
+```yaml
+    token: { mode: none }
+    userSecrets:
+      sources: [sealed, store, header]         # lookup order; omit any you do not want to accept
+      items:
+        - { name: JIRA_USERNAME,  env: JIRA_USERNAME,  required: true }
+        - { name: JIRA_API_TOKEN, env: JIRA_API_TOKEN, required: true }
+```
+
+`env` is for stdio children (set at start; a change restarts the child at the next idle
+boundary), `header` for HTTP servers (per request), `file` for either (tmpfs). A required item
+missing from every source is a JSON-RPC error (`-32001`) before any pod is spawned.
+
+How users supply them, per source:
+
+| Source | User does | Gateway holds |
+|---|---|---|
+| `sealed` | runs `juggernaut connect` and points the client at `http://127.0.0.1:8090/mcp` | nothing readable, ever |
+| `store` | `juggernaut secrets init --passphrase ...`, `juggernaut secrets set atlassian JIRA_API_TOKEN=...`, then the client sends `X-Juggernaut-Vault-Key` | ciphertext at rest; plaintext for one request |
+| `header` | puts `X-Juggernaut-Secret-<NAME>` in the client config | nothing |
+
+`gateway.userSecrets.store` selects where entries live (`memory`, `redis`; default the routing
+type); header names are configurable under `gateway.userSecrets`. The full model, including what
+each attacker can read, is in [SECURITY.md](SECURITY.md).
+
 ## 7. Tool exposure and the router
 
 Per server, `tools`:
@@ -174,7 +207,9 @@ filter that endpoint's tool list today (the pod exposes what the server has). On
 applies the rules: hidden tools are absent from `tools/list`, `search_tools` and `describe_tool`,
 and `execute` refuses them.
 
-Eager mode registers every visible tool of every granted adapter as `<adapter>__<name>` when the
+Every tool call re-resolves the caller from the request's current bearer and recomputes grants
+before forwarding, so a revoked token or a changed group takes effect on the next call. Eager
+mode registers every visible tool of every granted adapter as `<adapter>__<name>` when the
 client finishes `initialize`. Listing tools needs a pod per adapter, so the first user of an
 adapter pays its cold start at connect time; the tool list is then cached per (adapter, config
 hash) for 10 minutes for everyone. Lazy mode registers `search_tools`, `describe_tool`, `execute`
@@ -260,7 +295,15 @@ juggernaut render   -f juggernaut.yaml       # defaulted config as JSON
 juggernaut schema                            # JSON Schema
 juggernaut adapters                          # adapter types compiled into this binary
 juggernaut admin login --issuer https://kc/realms/juggernaut   # device flow; prints a token
+juggernaut secrets init --passphrase '...'                     # create the local vault (key cached 0600)
+juggernaut secrets set atlassian JIRA_USERNAME=a@x JIRA_API_TOKEN=...   # seal + upload (merges)
+juggernaut secrets list | delete <adapter> | rotate --passphrase '<new>'
+juggernaut connect --gateway https://mcp.example.internal      # tier-B companion on 127.0.0.1:8090
 ```
+
+`secrets` and `connect` take `--gateway` (`JUGGERNAUT_GATEWAY`), `--issuer` (`JUGGERNAUT_ISSUER`)
+and `--client-id` (default `mcp-client`, which needs the device grant enabled), or an existing
+token in `JUGGERNAUT_ACCESS_TOKEN`.
 
 Control plane (bearer with `juggernaut:mcp`; `juggernaut:admin` where noted):
 
@@ -272,6 +315,8 @@ Control plane (bearer with `juggernaut:mcp`; `juggernaut:admin` where noted):
 | `GET /tools`, `GET /tools/{name}` | allowlisted tool names per adapter (live metadata comes from the router) |
 | `GET /sessions`, `GET /sessions/{id}`, `DELETE /sessions/{id}` | the caller's session pods; delete terminates one |
 | `GET /users/{sub}/sessions`, `DELETE /users/{sub}/sessions` | admin: another user's pods; delete terminates all and revokes cached tokens |
+| `GET /me/secrets`, `PUT /me/secrets/{adapter}`, `DELETE /me/secrets/{adapter}` | the caller's sealed entries (ciphertext; the CLI is the intended client); a put or delete recycles that adapter's pod |
+| `GET /adapters/{name}/session-key` | the caller's pod's ephemeral public key for tier-B sealing (spawns the pod if needed) |
 | `GET /.well-known/oauth-protected-resource` | RFC 9728 metadata (404 for `none`/`static`) |
 | `GET /healthz`, `GET /readyz` | liveness; readiness checks the routing table |
 
@@ -290,6 +335,9 @@ Admin listener (`127.0.0.1:24680`, bearer with the admin role or `juggernaut:use
 | `429 pod cap reached` | `caps.podsPerUser`, `servers[].maxPods` or `caps.totalPods`; `GET /sessions` shows what is running |
 | `503 session pod starting; retry` | cold start exceeded `coldStartBudget`; `kubectl describe session` shows why (image pull, probe) |
 | `502 could not obtain a downstream token` | token exchange failed: exchange not enabled on the gateway client, missing audience client, wrong `clientSecretRef` |
+| `422 adapter X requires user secret NAME` | the caller supplied no value from any accepted source; run `juggernaut secrets set` (and send the vault key or use `connect`), or add the header |
+| `502 pod did not return a session key` | `podAuth` or the pod secret mismatch between gateway and wrapper, or the pod is not Ready |
+| gateway fails to start with `podAuth mtls: gateway client cert` | the controller has not issued `juggernaut-gateway-client-tls` yet, or the Secret is not mounted at `/etc/juggernaut/tls` |
 | session `Failed: isolation: ... CiliumNetworkPolicy CRD is not installed` | `egressEnforcer: cilium` on a cluster without Cilium; use `proxy` |
 | session `Failed: ... declares no egress hosts` | add `servers[].egress` or, for laptops, `egressEnforcer: none` with `allowInsecure` |
 | pod never Ready, `/readyz` 503 | the wrapper could not read `/run/juggernaut-secret/pod-token`; check the Secret and the mount |
