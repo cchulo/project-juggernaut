@@ -18,6 +18,7 @@ import (
 
 	"github.com/coreos/go-oidc/v3/oidc"
 
+	"github.com/cchulo/project-juggernaut/internal/adapters/identity/claims"
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/core"
 	"github.com/cchulo/project-juggernaut/internal/core/contracts"
@@ -95,28 +96,19 @@ func (a *Adapter) Verify(ctx context.Context, raw string) (*core.Principal, erro
 	if !a.ctx.Options.Bool("skip_audience_check", false) && !containsAudience(tok.Audience, id.Audience) {
 		return nil, fmt.Errorf("%w: audience %v does not include %q", contracts.ErrUnauthenticated, tok.Audience, id.Audience)
 	}
-	var claims map[string]any
-	if err := tok.Claims(&claims); err != nil {
+	var payload map[string]any
+	if err := tok.Claims(&payload); err != nil {
 		return nil, fmt.Errorf("%w: claims: %v", contracts.ErrUnauthenticated, err)
 	}
-	sum := sha256.Sum256([]byte(raw))
-	p := &core.Principal{
-		Subject:   tok.Subject,
-		Issuer:    tok.Issuer,
-		Expiry:    tok.Expiry,
-		RawToken:  raw,
-		TokenHash: base64.RawURLEncoding.EncodeToString(sum[:16]),
-		Username:  stringClaim(claims, id.UsernameClaim),
-		Groups:    stringSliceClaim(claims, id.GroupsClaim),
-		Scopes:    strings.Fields(stringClaim(claims, "scope")),
+	p, err := claims.FromClaims(payload, id.GroupsClaim, id.UsernameClaim)
+	if err != nil {
+		return nil, err
 	}
 	// Keycloak nests realm roles; treat them as groups so role-based mapping works.
-	if ra, ok := claims["realm_access"].(map[string]any); ok {
-		p.Groups = append(p.Groups, stringSliceClaim(ra, "roles")...)
-	}
-	for i, g := range p.Groups {
-		p.Groups[i] = strings.TrimPrefix(g, "/") // Keycloak group paths are "/name"
-	}
+	p.Groups = append(p.Groups, claims.AsList(claims.Claim(payload, "realm_access.roles"))...)
+	sum := sha256.Sum256([]byte(raw))
+	p.Issuer, p.Expiry, p.RawToken = tok.Issuer, tok.Expiry, raw
+	p.TokenHash = base64.RawURLEncoding.EncodeToString(sum[:16])
 	return p, nil
 }
 
@@ -161,23 +153,4 @@ func containsAudience(aud []string, want string) bool {
 		}
 	}
 	return false
-}
-
-func stringClaim(m map[string]any, k string) string {
-	s, _ := m[k].(string)
-	return s
-}
-
-func stringSliceClaim(m map[string]any, k string) []string {
-	raw, ok := m[k].([]any)
-	if !ok {
-		return nil
-	}
-	out := make([]string, 0, len(raw))
-	for _, v := range raw {
-		if s, ok := v.(string); ok {
-			out = append(out, s)
-		}
-	}
-	return out
 }

@@ -16,6 +16,23 @@ managed cluster you administer. Nothing in the core needs a cloud account.
 Milestone 0 does not need Kubernetes at all: `deploy/compose/` starts Keycloak, Redis and the
 gateway with Docker Compose, and session "pods" are local containers.
 
+## Fastest first run (no identity provider)
+
+`examples/juggernaut.laptop.yaml` uses `identity.type: none`: every loopback request is the fixed
+principal, session pods are docker containers, nothing is isolated. It needs Docker and nothing else:
+
+```sh
+make build
+docker build -f images/juggernaut-wrapper/Dockerfile -t ghcr.io/cchulo/juggernaut-wrapper:latest .
+docker build -f images/example-stdio-server/Dockerfile -t ghcr.io/cchulo/example-stdio-server:dev images/example-stdio-server
+docker network create juggernaut
+JUGGERNAUT_STATE_DIR=$PWD/.state bin/juggernaut-gateway --config examples/juggernaut.laptop.yaml
+claude mcp add --transport http juggernaut http://127.0.0.1:8080/mcp --scope user
+```
+
+Read [IDENTITY.md](IDENTITY.md) before opening it to more than one person and
+[ACCESS-CONTROL.md](ACCESS-CONTROL.md) before pointing it at real credentials.
+
 ## Quick path (kind + Helm)
 
 ```sh

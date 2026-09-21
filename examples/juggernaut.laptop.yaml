@@ -1,0 +1,44 @@
+# One person, one machine, no identity provider: identity.type none resolves
+# every loopback request to the fixed principal. Session "pods" are local docker
+# containers. Nothing is isolated; this is the fastest way to see the gateway
+# and the stdio wrapper work. Servers can only use token modes none or static
+# because there is no real token to exchange.
+apiVersion: juggernaut.io/v1alpha1
+kind: Config
+
+identity:
+  type: none
+  principal: { subject: local, groups: [everyone, juggernaut-admins] }
+  # allowRemote: true            # LAN option: every request then needs Bearer $JUGGERNAUT_TOKEN
+  broker: { mode: none }
+
+gateway:
+  publicURL: http://127.0.0.1:8080
+  listeners:
+    data:  { address: "127.0.0.1:8080" }
+    admin: { address: "127.0.0.1:24680" }
+  runtime:
+    kind: local
+    local: { mode: docker, network: juggernaut }
+
+network:
+  egressEnforcer: none
+  allowInsecure: true
+  imagePolicy: { requireDigest: false }
+
+servers:
+  - name: everything
+    description: MCP reference "everything" server (stdio) behind the wrapper
+    image: ghcr.io/cchulo/example-stdio-server:dev
+    transport: stdio
+    command: ["/usr/local/bin/node"]
+    args: ["/app/node_modules/@modelcontextprotocol/server-everything/dist/index.js", "stdio"]
+    token: { mode: none }
+    egress: [{ host: example.com }]
+
+authorization:
+  type: groups
+  options: { always_groups: [everyone] }
+  groups:
+    - { name: everyone, serverTypes: ["everything"] }
+    - { name: juggernaut-admins, serverTypes: ["*"], admin: true }

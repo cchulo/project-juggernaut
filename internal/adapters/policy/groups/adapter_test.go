@@ -6,6 +6,7 @@ import (
 
 	"github.com/cchulo/project-juggernaut/internal/config"
 	"github.com/cchulo/project-juggernaut/internal/core"
+	"github.com/cchulo/project-juggernaut/internal/core/contracts/contracttest"
 	"github.com/cchulo/project-juggernaut/internal/core/registry"
 )
 
@@ -44,6 +45,19 @@ authorization:
 		t.Fatal(err)
 	}
 	return config.NewStoreFrom(l, slog.Default())
+}
+
+func TestContract(t *testing.T) {
+	ctx := contracttest.Context(t, contracttest.LaptopConfig, nil, map[string]any{"always_groups": []any{"everyone"}})
+	pol, err := New(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := &core.Principal{Subject: "u1", Groups: []string{"engineering"}}
+	contracttest.AccessPolicy(t, pol, ctx.Cfg(), p)
+	if g := pol.Grants(p, ""); !g.Allows("github") {
+		t.Fatalf("always_groups everyone must grant github: %+v", g)
+	}
 }
 
 func TestGrantsAndToolRules(t *testing.T) {

@@ -42,8 +42,24 @@ func LoadFile(path string) (*Loaded, error) {
 	return l, nil
 }
 
+var envRef = regexp.MustCompile(`\$\{([A-Za-z_][A-Za-z0-9_]*)(?::-([^}]*))?\}`)
+
+// Interpolate replaces ${NAME} and ${NAME:-default} with environment values so
+// endpoints can differ between compose and Kubernetes without two files.
+// Secret values still belong in SecretRefs, not in interpolated strings.
+func Interpolate(raw []byte, lookup func(string) (string, bool)) []byte {
+	return envRef.ReplaceAllFunc(raw, func(m []byte) []byte {
+		sm := envRef.FindSubmatch(m)
+		if v, ok := lookup(string(sm[1])); ok {
+			return []byte(v)
+		}
+		return sm[2] // default (possibly empty)
+	})
+}
+
 // Parse validates and defaults a YAML document.
 func Parse(raw []byte) (*Loaded, error) {
+	raw = Interpolate(raw, os.LookupEnv)
 	jsonBytes, err := yaml.YAMLToJSON(raw)
 	if err != nil {
 		return nil, fmt.Errorf("yaml: %w", err)
@@ -104,6 +120,21 @@ func ApplyDefaults(c *Config) {
 	}
 	if id.Provider == "" {
 		id.Provider = "generic"
+	}
+	if id.StaticTokenEnv == "" {
+		id.StaticTokenEnv = "JUGGERNAUT_TOKEN"
+	}
+	if id.Type == "none" && id.Principal == nil {
+		id.Principal = &PrincipalSeed{Subject: "local", Groups: []string{"everyone", "juggernaut-admins"}}
+	}
+	if id.Principal != nil && id.Principal.Kind == "" {
+		id.Principal.Kind = "user"
+	}
+	for k, seed := range id.Tokens {
+		if seed.Kind == "" {
+			seed.Kind = "user"
+			id.Tokens[k] = seed
+		}
 	}
 	if id.GroupsClaim == "" {
 		id.GroupsClaim = "groups"
@@ -352,6 +383,22 @@ func Validate(c *Config) error {
 	}
 	if c.Network.EgressEnforcer == EgressProxy && (c.Network.Proxy == nil || c.Network.Proxy.Address == "") {
 		add("network.proxy.address is required when network.egressEnforcer is proxy")
+	}
+	switch c.Identity.Type {
+	case "bearer_jwt", "bearer_introspect":
+		if c.Identity.Issuer == "" || c.Identity.Audience == "" {
+			add("identity.issuer and identity.audience are required for identity.type %s", c.Identity.Type)
+		}
+	case "none", "static":
+		if c.Identity.Broker.Mode == BrokerExchange || c.Identity.Broker.Mode == BrokerRefreshToken {
+			add("identity.type %s issues no real tokens; identity.broker.mode must be none (servers can use token modes none or static)", c.Identity.Type)
+		}
+		if c.Identity.Type == "static" && len(c.Identity.Tokens) == 0 {
+			add("identity.type static requires identity.tokens")
+		}
+		if c.Identity.KeycloakAdmin != nil {
+			add("identity.keycloakAdmin needs a bearer identity type for the admin listener")
+		}
 	}
 	if c.Network.PodAuth == "mtls" {
 		add("network.podAuth: mtls is reserved for a later milestone; use shared-secret")

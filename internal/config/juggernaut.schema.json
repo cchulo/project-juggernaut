@@ -103,18 +103,17 @@
     "Identity": {
       "type": "object",
       "additionalProperties": false,
-      "required": [
-        "issuer",
-        "audience"
-      ],
+      "required": [],
       "properties": {
         "type": {
           "type": "string",
           "enum": [
+            "none",
+            "static",
             "bearer_jwt",
             "bearer_introspect"
           ],
-          "description": "identity adapter; default bearer_introspect when introspection.enabled, else bearer_jwt"
+          "description": "identity adapter: none (one machine, fixed principal), static (token map; tests only), bearer_jwt, bearer_introspect. Default: bearer_introspect when introspection.enabled, else bearer_jwt"
         },
         "options": {
           "type": "object",
@@ -139,6 +138,26 @@
         "audience": {
           "type": "string",
           "minLength": 1
+        },
+        "principal": {
+          "$ref": "#/$defs/PrincipalSeed",
+          "description": "type none: who every request is (default subject local, groups [everyone, juggernaut-admins])"
+        },
+        "allowRemote": {
+          "type": "boolean",
+          "default": false,
+          "description": "type none: lift the loopback rule; every request then needs the bearer named by staticTokenEnv"
+        },
+        "staticTokenEnv": {
+          "type": "string",
+          "default": "JUGGERNAUT_TOKEN"
+        },
+        "tokens": {
+          "type": "object",
+          "additionalProperties": {
+            "$ref": "#/$defs/PrincipalSeed"
+          },
+          "description": "type static: bearer token -> principal"
         },
         "jwksURL": {
           "type": "string",
@@ -259,7 +278,42 @@
             }
           }
         }
-      }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "type": {
+                "enum": [
+                  "bearer_jwt",
+                  "bearer_introspect"
+                ]
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "issuer",
+              "audience"
+            ]
+          }
+        },
+        {
+          "if": {
+            "not": {
+              "required": [
+                "type"
+              ]
+            }
+          },
+          "then": {
+            "required": [
+              "issuer",
+              "audience"
+            ]
+          }
+        }
+      ]
     },
     "Gateway": {
       "type": "object",
@@ -1010,7 +1064,7 @@
         },
         "options": {
           "type": "object",
-          "description": "adapter-specific options",
+          "description": "policy options; groups: always_groups (groups every authenticated caller implicitly holds, e.g. [everyone])",
           "additionalProperties": true
         },
         "groups": {
@@ -1056,6 +1110,40 @@
               }
             }
           }
+        }
+      }
+    },
+    "PrincipalSeed": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "subject"
+      ],
+      "properties": {
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "scopes": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "OAuth scopes held; empty = every scope"
+        },
+        "kind": {
+          "type": "string",
+          "enum": [
+            "user",
+            "service"
+          ],
+          "default": "user"
         }
       }
     }

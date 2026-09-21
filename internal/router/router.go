@@ -99,6 +99,7 @@ func (rt *Router) serverFor(r *http.Request) *mcp.Server {
 				rt.mu.Unlock()
 				c.closeAll()
 			}()
+			rt.addWhoami(srv, p, grants)
 			if grants.LazyTools {
 				rt.addMetaTools(srv, p, grants, c)
 			} else {
@@ -207,6 +208,23 @@ func (rt *Router) call(ctx context.Context, p *core.Principal, grants core.Grant
 	}
 	_ = grants
 	return res, err
+}
+
+// addWhoami exposes what the gateway made of the token, so an agent (and the
+// person debugging it) can see subject, kind, groups, scopes and grants.
+func (rt *Router) addWhoami(srv *mcp.Server, p *core.Principal, grants core.Grants) {
+	mcp.AddTool(srv, &mcp.Tool{
+		Name:        "whoami",
+		Description: "Who the gateway thinks you are: subject, kind, groups, token scopes, the adapters (server types) you may use, and whether tools are loaded lazily.",
+	}, func(context.Context, *mcp.CallToolRequest, struct{}) (*mcp.CallToolResult, any, error) {
+		view := map[string]any{
+			"subject": p.Subject, "username": p.Username, "kind": p.Kind, "issuer": p.Issuer,
+			"groups": p.Groups, "tokenScopes": p.Scopes,
+			"adapters": grants.ServerTypes, "admin": grants.Admin, "podsPerUser": grants.PodsPerUser, "lazyTools": grants.LazyTools,
+		}
+		b, _ := json.MarshalIndent(view, "", "  ")
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}, nil, nil
+	})
 }
 
 // --- lazy meta-tools -------------------------------------------------------

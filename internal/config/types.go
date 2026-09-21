@@ -45,18 +45,35 @@ type ListenerTLS struct {
 type Identity struct {
 	// Type selects the identity adapter (bearer_jwt, bearer_introspect). Default:
 	// bearer_introspect when introspection.enabled, else bearer_jwt.
-	Type          string         `json:"type,omitempty"`
-	Options       map[string]any `json:"options,omitempty"`
-	Provider      string         `json:"provider,omitempty"`
-	Issuer        string         `json:"issuer"`
-	Audience      string         `json:"audience"`
-	JWKSURL       string         `json:"jwksURL,omitempty"`
-	GroupsClaim   string         `json:"groupsClaim,omitempty"`
-	UsernameClaim string         `json:"usernameClaim,omitempty"`
-	Scopes        Scopes         `json:"scopes,omitempty"`
-	Introspection Introspection  `json:"introspection,omitempty"`
-	Broker        Broker         `json:"broker,omitempty"`
-	KeycloakAdmin *KeycloakAdmin `json:"keycloakAdmin,omitempty"`
+	Type     string         `json:"type,omitempty"`
+	Options  map[string]any `json:"options,omitempty"`
+	Provider string         `json:"provider,omitempty"`
+	// Issuer and Audience are required for bearer_* types; unused by none and static.
+	Issuer   string `json:"issuer,omitempty"`
+	Audience string `json:"audience,omitempty"`
+	// Principal is who every request is under identity.type none.
+	Principal *PrincipalSeed `json:"principal,omitempty"`
+	// AllowRemote (type none) lifts the loopback rule; every request then needs the bearer named by StaticTokenEnv.
+	AllowRemote    bool   `json:"allowRemote,omitempty"`
+	StaticTokenEnv string `json:"staticTokenEnv,omitempty"`
+	// Tokens maps bearer strings to principals under identity.type static (tests and demos only).
+	Tokens        map[string]PrincipalSeed `json:"tokens,omitempty"`
+	JWKSURL       string                   `json:"jwksURL,omitempty"`
+	GroupsClaim   string                   `json:"groupsClaim,omitempty"`
+	UsernameClaim string                   `json:"usernameClaim,omitempty"`
+	Scopes        Scopes                   `json:"scopes,omitempty"`
+	Introspection Introspection            `json:"introspection,omitempty"`
+	Broker        Broker                   `json:"broker,omitempty"`
+	KeycloakAdmin *KeycloakAdmin           `json:"keycloakAdmin,omitempty"`
+}
+
+// PrincipalSeed is a principal written in the config (type none / static).
+type PrincipalSeed struct {
+	Subject string   `json:"subject"`
+	Groups  []string `json:"groups,omitempty"`
+	// Scopes are the OAuth scopes the principal holds; empty means every scope the gateway knows.
+	Scopes []string `json:"scopes,omitempty"`
+	Kind   string   `json:"kind,omitempty"` // user | service
 }
 
 // Scopes are the OAuth scope names the gateway requires and advertises.

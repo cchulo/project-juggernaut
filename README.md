@@ -23,11 +23,15 @@ Pre-alpha scaffold. Nothing here is production-ready yet.
 
 | File | What |
 |------|------|
-| `docs/ARCHITECTURE.md` | code structure: core, contracts, adapters, registry, composition roots |
-| `docs/DESIGN.md` | full system design (identity, lifecycle, isolation, schema, API, wrapper, admin UI, security, stack, plan, layout) |
+| `docs/ARCHITECTURE.md` | system diagram, contracts, wire contract of a session pod, test harness |
+| `docs/IDENTITY.md` | identity types (`none`, `static`, `bearer_jwt`, `bearer_introspect`), token brokering, discovery |
+| `docs/ACCESS-CONTROL.md` | groups → server types → tools; what is checked on every call; checklist before opening to a team |
+| `docs/CONNECT.md` | client configuration for Claude Code, Cursor and others |
+| `docs/DESIGN.md` | the design record (identity, lifecycle, isolation, schema, API, wrapper, admin UI, security, stack, plan, layout) |
 | `docs/DESIGN-BRIEF.md` | the brief the design answers |
 | `docs/SELF-HOSTING.md` | running it on your own laptop or cluster |
-| `examples/juggernaut.yaml` | worked configuration example |
+| `examples/juggernaut.yaml` | worked configuration example (Keycloak, exchange, cilium) |
+| `examples/juggernaut.laptop.yaml` | one machine, no identity provider (`identity.type: none`) |
 | `schemas/juggernaut.schema.json` | JSON Schema for `juggernaut.yaml` |
 | `api/openapi.yaml` | control-plane and data-plane API |
 | `deploy/policies/` | reference NetworkPolicy / CiliumNetworkPolicy manifests |

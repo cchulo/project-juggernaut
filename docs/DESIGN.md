@@ -1,5 +1,10 @@
 # Juggernaut — System Design
 
+Status: **design record**. The living documents are [ARCHITECTURE.md](ARCHITECTURE.md) (code
+structure, contracts, wire contract), [IDENTITY.md](IDENTITY.md), [ACCESS-CONTROL.md](ACCESS-CONTROL.md),
+[CONNECT.md](CONNECT.md) and [SELF-HOSTING.md](SELF-HOSTING.md); the milestone notes
+(`MILESTONE-*.md`) carry the demo checklists. Where this file and those disagree, those win.
+
 Juggernaut is a **self-hosted**, open-source, Kubernetes-native MCP gateway that runs one isolated
 MCP server pod per (user, server type), brokers OAuth 2.0 on the front door, and hands each pod a
 token that identifies the calling user.

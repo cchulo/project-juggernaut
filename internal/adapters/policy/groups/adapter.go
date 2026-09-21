@@ -1,6 +1,9 @@
 // Package groups is the policy adapter that maps IdP groups (authorization.groups
 // in juggernaut.yaml) to server types, per-user caps, admin and tool visibility.
 // It is the port of cerebro's `policy.type: groups`.
+//
+// Options: always_groups (groups every authenticated caller implicitly holds,
+// e.g. [everyone], so a group entry named everyone grants to all users).
 package groups
 
 import (
@@ -28,8 +31,9 @@ func (a *Adapter) Grants(p *core.Principal, clientName string) core.Grants {
 	admin := p.HasScope(c.Identity.Scopes.Admin)
 	lazy := c.Gateway.Tools.DefaultLoading == "lazy"
 	var serverTypes, groups []string
+	always := a.alwaysGroups()
 	for _, grp := range c.Authorization.Groups {
-		if !p.InGroup(grp.Name) {
+		if !p.InGroup(grp.Name) && !always[grp.Name] {
 			continue
 		}
 		groups = append(groups, grp.Name)
@@ -65,6 +69,32 @@ func (a *Adapter) Grants(p *core.Principal, clientName string) core.Grants {
 		}
 	}
 	return core.NewGrants(p.Subject, serverTypes, groups, admin, podsPerUser, lazy)
+}
+
+func (a *Adapter) alwaysGroups() map[string]bool {
+	out := map[string]bool{}
+	if raw, ok := a.ctx.Options["always_groups"]; ok {
+		for _, g := range asStrings(raw) {
+			out[g] = true
+		}
+	}
+	return out
+}
+
+func asStrings(v any) []string {
+	switch t := v.(type) {
+	case []string:
+		return t
+	case []any:
+		out := make([]string, 0, len(t))
+		for _, e := range t {
+			if s, ok := e.(string); ok {
+				out = append(out, s)
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // ToolRule applies allow/deny lists, per-group visibility and renames.

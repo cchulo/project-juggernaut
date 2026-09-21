@@ -13,10 +13,13 @@ import (
 type Principal struct {
 	Subject  string
 	Username string
-	Groups   []string
-	Scopes   []string
-	Issuer   string
-	Expiry   time.Time
+	// Kind is "user" or "service" (client-credentials tokens: no human identity claim, azp == sub).
+	Kind        string
+	DisplayName string
+	Groups      []string
+	Scopes      []string
+	Issuer      string
+	Expiry      time.Time
 	// RawToken is the validated bearer token. Only the token broker may read
 	// it (as the subject_token of an RFC 8693 exchange); it is never logged
 	// or forwarded upstream.

@@ -22,16 +22,17 @@ type Authn struct {
 func (a *Authn) Wrap(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		req := contracts.RequestInfoFrom(r)
-		if _, ok := req.Bearer(); !ok {
-			a.reject(w, contracts.ChallengeMissing, "", http.StatusUnauthorized, "missing")
-			return
-		}
+		_, hasBearer := req.Bearer()
 		p, err := a.Identity.Resolve(r.Context(), req)
 		if err != nil {
 			a.Log.Debug("identity rejected", "err", err)
+			if !hasBearer {
+				a.reject(w, contracts.ChallengeMissing, "", http.StatusUnauthorized, "missing")
+				return
+			}
 			reason := "invalid"
-			if errors.Is(err, contracts.ErrUnauthenticated) {
-				reason = "unauthenticated"
+			if !errors.Is(err, contracts.ErrUnauthenticated) {
+				reason = "error"
 			}
 			a.reject(w, contracts.ChallengeInvalidToken, "token validation failed", http.StatusUnauthorized, reason)
 			return
